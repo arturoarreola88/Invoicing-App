@@ -166,12 +166,13 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
     c.drawString(right_x, height-2.6*inch, terms_text)
 
     if show_paid and not is_proposal:
-        c.setFont("Helvetica-Bold", 36)
-        c.setFillColorRGB(1,0,0)
-        c.drawString(width - 2*inch, height-2.3*inch, "PAID")
-        c.setFont("Helvetica", 12)
-        c.drawString(width - 2*inch, height-2.6*inch, datetime.now().strftime("%m/%d/%Y"))
-        c.setFillColorRGB(0,0,0)
+    c.setFont("Helvetica-Bold", 36)
+    c.setFillColorRGB(1,0,0)
+    # Position PAID stamp lower, centered between customer info and date block
+    c.drawCentredString(width/2, height-3.0*inch, "PAID")
+    c.setFont("Helvetica", 12)
+    c.drawCentredString(width/2, height-3.4*inch, datetime.now().strftime("%m/%d/%Y"))
+    c.setFillColorRGB(0,0,0)
 
     # Items header
     y = height-3.6*inch
