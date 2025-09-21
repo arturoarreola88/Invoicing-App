@@ -29,9 +29,10 @@ SMTP_SERVER = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(st.secrets.get("SMTP_PORT", 465))
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "")
 
-# ---------- Initialize Tables ----------
+# ---------- Initialize Tables (with auto migrations) ----------
 def init_db():
     with engine.begin() as conn:
+        # Customers
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS customers (
                 id TEXT PRIMARY KEY,
@@ -42,33 +43,40 @@ def init_db():
                 city_state_zip TEXT
             );
         """))
+
+        # Proposals
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS proposals (
                 id TEXT PRIMARY KEY,
                 customer_id TEXT NOT NULL REFERENCES customers(id),
-                project_name TEXT,
-                project_location TEXT,
                 items_json TEXT DEFAULT '[]',
                 notes TEXT,
                 status TEXT DEFAULT 'open',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         """))
+        # Auto migrations for proposals
+        conn.execute(text("ALTER TABLE proposals ADD COLUMN IF NOT EXISTS project_name TEXT;"))
+        conn.execute(text("ALTER TABLE proposals ADD COLUMN IF NOT EXISTS project_location TEXT;"))
+
+        # Invoices
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS invoices (
                 id SERIAL PRIMARY KEY,
                 invoice_no TEXT UNIQUE,
                 customer_id TEXT NOT NULL REFERENCES customers(id),
-                project_name TEXT,
-                project_location TEXT,
                 items_json TEXT DEFAULT '[]',
-                deposit NUMERIC DEFAULT 0,
-                check_number TEXT,
                 total NUMERIC DEFAULT 0,
                 paid BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         """))
+        # Auto migrations for invoices
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS project_name TEXT;"))
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS project_location TEXT;"))
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS deposit NUMERIC DEFAULT 0;"))
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS check_number TEXT;"))
+
 init_db()
 
 # ---------- Helpers ----------
@@ -85,20 +93,13 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
     # --- Company header ---
     try:
         logo = ImageReader("logo.png")
-        # Center the logo at the top
         logo_width = 120
         logo_x = (width - logo_width) / 2
-        c.drawImage(
-            logo,
-            logo_x, height-1.2*inch,
-            width=logo_width,
-            preserveAspectRatio=True,
-            mask='auto'
-        )
+        c.drawImage(logo, logo_x, height-1.2*inch, width=logo_width,
+                    preserveAspectRatio=True, mask='auto')
     except Exception as e:
         print("Logo load failed:", e)
 
-    # Business info below logo, left aligned
     c.setFont("Helvetica-Bold", 16)
     c.drawString(1*inch, height-2.0*inch, "J & I Heating and Cooling")
     c.setFont("Helvetica", 10)
@@ -113,7 +114,6 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
         c.drawString(1*inch, height-3.1*inch, f"Proposal #: {invoice_no}")
     else:
         c.drawString(1*inch, height-3.1*inch, f"Invoice #: {invoice_no}")
-
     c.drawString(1*inch, height-3.3*inch, f"Customer: {cust_name}")
     c.drawString(1*inch, height-3.5*inch, f"Project: {project_name or ''}")
     c.drawString(1*inch, height-3.7*inch, f"Location: {project_location or ''}")
@@ -154,7 +154,6 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
             c.drawString(5*inch, y, "Total:")
             c.drawString(6*inch, y, f"${grand_total:,.2f}")
             y -= 15
-
         if check_number:
             c.setFont("Helvetica", 10)
             c.drawString(1*inch, y, f"Check #: {check_number}")
