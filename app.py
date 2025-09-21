@@ -81,7 +81,7 @@ if not customers:
 
 # Select customer
 st.subheader("Invoice Builder")
-cust = st.selectbox("Select Customer", customers, format_func=lambda c: f"{c['name']} ({c['id']})")
+cust = st.selectbox("Select Customer", customers, format_func=lambda c: c['name']
 invoice_no = st.text_input("Invoice #", "1001")
 project = st.text_input("Project / Job", "")
 show_paid = st.toggle("Show PAID Stamp", value=False)
