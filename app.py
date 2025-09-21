@@ -103,10 +103,10 @@ def prefill_from_proposal(prop):
 def compute_subtotal(items):
     return sum(float(r.get("Qty", 0)) * float(r.get("Unit Price", 0)) for r in items)
 
-def show_pdf_inline(pdf_bytes, height=900):
+def show_pdf_newtab(pdf_bytes):
     b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-    html = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="{height}" type="application/pdf"></iframe>'
-    components.html(html, height=height, scrolling=True)
+    href = f'<a href="data:application/pdf;base64,{b64}" target="_blank">📄 Open PDF in New Tab</a>'
+    st.markdown(href, unsafe_allow_html=True)
 
 # ---------- PDF Builder ----------
 def build_pdf(invoice_no, cust_name, project_name, project_location, items,
