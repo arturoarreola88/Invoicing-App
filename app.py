@@ -345,7 +345,7 @@ if mode == "Proposal":
                          False, notes=proposal_notes, is_proposal=True,
                          signature_png_bytes=signature_bytes, signature_date_text=signature_date_text)
     st.download_button("📄 Download Proposal", pdf_data, file_name=f"Proposal_{pid}.pdf")
-    if st.button("👀 View Proposal PDF"): show_pdf_inline(pdf_data)
+    if st.button("👀 View Proposal PDF"): show_pdf_newtab(pdf_data)
     if st.button("📧 Email Proposal"):
         msg = EmailMessage()
         msg["From"], msg["To"], msg["Subject"] = FROM_EMAIL, cust.get("email") or "", f"Proposal {pid}"
@@ -384,7 +384,7 @@ if mode == "Invoice":
 
     st.download_button("📄 Download Invoice", pdf_data, file_name=f"Invoice_{inv_no}.pdf")
     if st.button("👀 View Invoice PDF"):
-        show_pdf_inline(pdf_data)
+        show_pdf_newtab(pdf_data)
     if st.button("📧 Email Invoice"):
         msg = EmailMessage()
         msg["From"], msg["To"], msg["Subject"] = FROM_EMAIL, cust.get("email") or "", f"Invoice {inv_no}"
@@ -448,6 +448,7 @@ else:
                                      subtotal=compute_subtotal(json.loads(prop["items_json"] or "[]")),
                                      deposit=0, grand_total=0, check_number=None,
                                      is_proposal=True, notes=prop.get("notes"))
+                                     show_pdf_newtab(pdf_quick)
                 
 # app.py (Invoicing App with Postgres)
 # Full Streamlit code provided in chat previously
