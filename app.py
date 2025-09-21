@@ -1,16 +1,21 @@
-import os, json, io, smtplib, textwrap
-from datetime import datetime
+import os, json, io, smtplib, textwrap, base64
+from datetime import datetime, timedelta
 from email.message import EmailMessage
+
 import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_drawable_canvas import st_canvas
+
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
+
 from sqlalchemy import create_engine, text
 
 st.set_page_config(page_title="J&I Invoicing", page_icon="🧾", layout="centered")
 
-# Show logo
+# ---------- Logo ----------
 try:
     st.image("logo.png", width=200)
 except:
@@ -77,29 +82,34 @@ init_db()
 def compute_subtotal(items):
     return sum(float(r.get("Qty", 0)) * float(r.get("Unit Price", 0)) for r in items)
 
+def show_pdf_inline(pdf_bytes, height=900):
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    html = f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="{height}" type="application/pdf"></iframe>'
+    components.html(html, height=height, scrolling=True)
+
 def build_pdf(invoice_no, cust_name, project_name, project_location, items,
               subtotal, deposit, grand_total, check_number,
-              show_paid=False, notes=None, is_proposal=False):
+              show_paid=False, notes=None, is_proposal=False,
+              signature_png_bytes=None, signature_date_text=None):
+    """Generate Proposal/Invoice PDF with header/footer, wrapped text, terms/dates, and optional signature overlay."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=LETTER)
     width, height = LETTER
     page_num = 1
 
-    # --- Footer ---
+    # --- Footer & Header ---
     def draw_footer(canv, pnum):
         canv.setFont("Helvetica-Oblique", 9)
         canv.setFillColorRGB(0.3, 0.3, 0.3)
         footer_text = f"Thank you for your business!  •  J & I Heating and Cooling  •  (630) 849-0385  •  Sandwich, IL   |   Page {pnum}"
         canv.drawCentredString(width/2, 0.5*inch, footer_text)
 
-    # --- Header ---
     def draw_header():
         try:
             logo = ImageReader("logo.png")
-            logo_width = 120
-            logo_x = (width - logo_width) / 2
-            c.drawImage(logo, logo_x, height-1.2*inch, width=logo_width,
-                        preserveAspectRatio=True, mask='auto')
+            logo_w = 120
+            logo_x = (width - logo_w) / 2
+            c.drawImage(logo, logo_x, height-1.2*inch, width=logo_w, preserveAspectRatio=True, mask='auto')
         except:
             pass
         c.setFont("Helvetica-Bold", 16)
@@ -117,21 +127,36 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
     # First page
     new_page(page_num)
 
-    # Header info
+    # Header info & Terms
+    issue_date = datetime.now().date()
+    if is_proposal:
+        terms_date = issue_date + timedelta(days=15)
+        terms_text = f"Valid until: {terms_date.strftime('%m/%d/%Y')}"
+        heading = "Proposal"
+    else:
+        terms_text = f"Due Date: {issue_date.strftime('%m/%d/%Y')}"
+        heading = "Invoice"
+
     c.setFont("Helvetica", 12)
-    c.drawString(1*inch, height-3.1*inch, f"{'Proposal' if is_proposal else 'Invoice'} #: {invoice_no}")
+    c.drawString(1*inch, height-3.1*inch, f"{heading} #: {invoice_no}")
     c.drawString(1*inch, height-3.3*inch, f"Customer: {cust_name}")
     c.drawString(1*inch, height-3.5*inch, f"Project: {project_name or ''}")
     c.drawString(1*inch, height-3.7*inch, f"Location: {project_location or ''}")
+    c.setFont("Helvetica", 10)
+    c.drawString(1*inch, height-3.9*inch, f"Date: {issue_date.strftime('%m/%d/%Y')}")
+    c.drawString(3.5*inch, height-3.9*inch, terms_text)
 
-    # "PAID" stamp repositioned
+    # "PAID" stamp + date (top-right)
     if show_paid and not is_proposal:
         c.setFont("Helvetica-Bold", 36)
         c.setFillColorRGB(1, 0, 0)
         c.drawString(4.5*inch, height-3.1*inch, "PAID")
+        c.setFont("Helvetica", 12)
+        c.drawString(4.5*inch, height-3.4*inch, datetime.now().strftime("%m/%d/%Y"))
+        c.setFillColorRGB(0, 0, 0)
 
-    # Line items
-    y = height-4.1*inch
+    # Line items (wrapped)
+    y = height-4.2*inch
     c.setFont("Helvetica-Bold", 10)
     c.drawString(1*inch, y, "Description")
     c.drawString(4*inch, y, "Qty")
@@ -139,9 +164,10 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
     c.drawString(6*inch, y, "Line Total")
     y -= 14
     c.setFont("Helvetica", 10)
+
     for row in items:
         desc_text = str(row.get("Description", ""))
-        wrapped_desc = textwrap.wrap(desc_text, width=50)
+        wrapped_desc = textwrap.wrap(desc_text, width=50)  # keep in Description column
         for j, line in enumerate(wrapped_desc):
             if y < 1.5*inch:
                 draw_footer(c, page_num)
@@ -151,16 +177,25 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
                 y = height-1*inch
                 c.setFont("Helvetica", 10)
             c.drawString(1*inch, y, line)
-            if j == 0:  # only first line shows Qty/Unit/Line Total
-                c.drawString(4*inch, y, f"{float(row.get('Qty',0)):.2f}")
-                c.drawString(5*inch, y, f"${float(row.get('Unit Price',0)):.2f}")
-                c.drawString(6*inch, y, f"${float(row.get('Qty',0))*float(row.get('Unit Price',0)):.2f}")
+            if j == 0:
+                qty = float(row.get('Qty', 0))
+                unit = float(row.get('Unit Price', 0))
+                c.drawString(4*inch, y, f"{qty:.2f}")
+                c.drawString(5*inch, y, f"${unit:.2f}")
+                c.drawString(6*inch, y, f"${qty*unit:.2f}")
             y -= 12
 
-    # Totals (invoices only)
-    if not is_proposal:
-        y -= 8
-        c.setFont("Helvetica-Bold", 11)
+    # Totals
+    y -= 8
+    c.setFont("Helvetica-Bold", 11)
+    if is_proposal:
+        c.drawString(5*inch, y, "Subtotal:")
+        c.drawString(6*inch, y, f"${subtotal:,.2f}")
+        y -= 15
+        c.drawString(5*inch, y, "Grand Total:")
+        c.drawString(6*inch, y, f"${subtotal:,.2f}")
+        y -= 15
+    else:
         c.drawString(5*inch, y, "Subtotal:")
         c.drawString(6*inch, y, f"${subtotal:,.2f}")
         y -= 15
@@ -168,19 +203,15 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
             c.drawString(5*inch, y, "Deposit:")
             c.drawString(6*inch, y, f"-${float(deposit):,.2f}")
             y -= 15
-            c.drawString(5*inch, y, "Grand Total:")
-            c.drawString(6*inch, y, f"${grand_total:,.2f}")
-            y -= 15
-        else:
-            c.drawString(5*inch, y, "Total:")
-            c.drawString(6*inch, y, f"${grand_total:,.2f}")
-            y -= 15
+        c.drawString(5*inch, y, "Grand Total:")
+        c.drawString(6*inch, y, f"${grand_total:,.2f}")
+        y -= 15
         if check_number:
             c.setFont("Helvetica", 10)
             c.drawString(1*inch, y, f"Check #: {check_number}")
             y -= 15
 
-    # Notes
+    # Notes (wrapped)
     if notes:
         c.setFont("Helvetica-Oblique", 9)
         wrapped = textwrap.wrap(notes, width=90)
@@ -195,14 +226,49 @@ def build_pdf(invoice_no, cust_name, project_name, project_location, items,
             c.drawString(1*inch, y, line)
             y -= 12
 
+    # Signature lines
+    y -= 30
+    if y < 1.2*inch:
+        draw_footer(c, page_num)
+        c.showPage()
+        page_num += 1
+        new_page(page_num)
+        y = height - 1.2*inch
+
+    c.setFont("Helvetica", 10)
+    c.drawString(1*inch, y, "X ____________________________")
+    c.drawString(4*inch, y, "Date: ________________________")
+    y -= 5
+
+    # Optional signature image overlay + date
+    if signature_png_bytes:
+        try:
+            sig_reader = ImageReader(io.BytesIO(signature_png_bytes))
+            # place signature image roughly over the first line
+            c.drawImage(sig_reader, 1.0*inch, y, width=2.5*inch, height=0.7*inch, mask='auto')
+        except Exception as e:
+            print("Signature draw failed:", e)
+    if signature_date_text:
+        c.setFont("Helvetica", 10)
+        c.drawString(4.9*inch, y + 0.35*inch, signature_date_text)
+
     draw_footer(c, page_num)
     c.save()
     buf.seek(0)
     return buf.getvalue()
 
-# ---------- Dynamic Line Items ----------
+# ---------- Session defaults for prefill ----------
 if "line_count" not in st.session_state:
     st.session_state.line_count = 5
+if "prefill_items" not in st.session_state:
+    st.session_state.prefill_items = []
+if "prefill_customer_id" not in st.session_state:
+    st.session_state.prefill_customer_id = None
+if "project_name" not in st.session_state:
+    st.session_state.project_name = ""
+if "project_location" not in st.session_state:
+    st.session_state.project_location = ""
+
 def add_line():
     st.session_state.line_count += 1
 
@@ -216,20 +282,34 @@ if not customers:
     st.warning("No customers yet.")
     st.stop()
 
-cust = st.selectbox("Select Customer", customers, format_func=lambda c: c["name"])
+# Customer preselect if converted from proposal
+def_cust_id = st.session_state.prefill_customer_id
+cust_index = 0
+if def_cust_id:
+    for i, cobj in enumerate(customers):
+        if cobj["id"] == def_cust_id:
+            cust_index = i
+            break
+
+cust = st.selectbox("Select Customer", customers, index=cust_index, format_func=lambda c: c["name"])
 
 # ---------- Project fields ----------
-project_name = st.text_input("Project Name", "")
-project_location = st.text_input("Project Location (Address)", "")
+project_name = st.text_input("Project Name", st.session_state.project_name, key="project_name")
+project_location = st.text_input("Project Location (Address)", st.session_state.project_location, key="project_location")
 
-# ---------- Line items ----------
+# ---------- Line items (supports prefill) ----------
 items = []
 st.write("Line Items")
+prefill = st.session_state.prefill_items or []
 for i in range(st.session_state.line_count):
+    default_desc = prefill[i]["Description"] if i < len(prefill) else ""
+    default_qty = float(prefill[i]["Qty"]) if i < len(prefill) else 1.0
+    default_unit = float(prefill[i]["Unit Price"]) if i < len(prefill) else 0.0
+
     c1, c2, c3, c4 = st.columns([5,1.5,2,2])
-    desc = c1.text_input(f"Description {i+1}", "")
-    qty = c2.number_input(f"Qty {i+1}", min_value=0.0, value=1.0, step=1.0)
-    unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, value=0.0, step=10.0)
+    desc = c1.text_input(f"Description {i+1}", default_desc, key=f"desc_{i}")
+    qty = c2.number_input(f"Qty {i+1}", min_value=0.0, value=default_qty, step=1.0, key=f"qty_{i}")
+    unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, value=default_unit, step=10.0, key=f"unit_{i}")
     c4.write(f"${qty*unit:,.2f}")
     if str(desc).strip():
         items.append({"Description": desc, "Qty": qty, "Unit Price": unit})
@@ -237,25 +317,58 @@ st.button("➕ Add Line Item", on_click=add_line)
 
 subtotal = compute_subtotal(items)
 
-# ---------- Personalized Email Body ----------
+# ---------- Signature Capture (optional, works great on iPad/Pencil) ----------
+st.markdown("### Signature (optional)")
+sig_cols = st.columns([3, 2])
+with sig_cols[0]:
+    use_signature = st.toggle("Capture on-screen signature", value=False)
+with sig_cols[1]:
+    signature_date = st.date_input("Signature Date", value=datetime.now().date())
+
+signature_bytes = None
+if use_signature:
+    st.caption("Sign below:")
+    canvas_result = st_canvas(
+        fill_color="rgba(0, 0, 0, 0)",
+        stroke_width=3,
+        stroke_color="#000000",
+        background_color="#FFFFFF",
+        width=560,
+        height=150,
+        drawing_mode="freedraw",
+        key="signature_canvas",
+    )
+    if canvas_result.image_data is not None:
+        # Convert RGBA numpy array to PNG bytes
+        import PIL.Image
+        img = PIL.Image.fromarray(canvas_result.image_data.astype("uint8"))
+        # Trim white border to get a tighter signature (optional)
+        # Save to bytes
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        signature_bytes = out.getvalue()
+
+signature_date_text = signature_date.strftime("%m/%d/%Y") if signature_date else None
+
+# ---------- Email Body ----------
 def build_email_body(cust_name, is_proposal, ref_no):
     hour = datetime.now().hour
     greeting = "Good morning" if hour < 12 else "Good afternoon"
-    body = f"""{greeting} {cust_name},
-
-Attached is the {'proposal' if is_proposal else 'invoice'} ({ref_no}) that has been requested. 
-Please take a moment at your earliest convenience to look it over and if you have any 
-questions, comments, or concerns please contact me.
-
-Thank you for choosing J & I Heating and Cooling.
-
-Best regards,  
-Arturo Arreola  
-Owner  
-Direct: (630) 849-0385  
-
-<a href="https://jihchr.com">Click here for our website</a>
-"""
+    body = f"""
+    <p>{greeting} {cust_name},</p>
+    <p>Attached is the {'proposal' if is_proposal else 'invoice'} ({ref_no}) that has been requested.
+    Please take a moment at your earliest convenience to look it over and if you have any
+    questions, comments, or concerns please contact me.</p>
+    <p>Thank you for choosing J & I Heating and Cooling.</p>
+    <hr>
+    <p>
+    Best regards,<br>
+    <b>Arturo Arreola</b><br>
+    Owner<br>
+    Direct: (630) 849-0385<br>
+    <a href="https://jihchr.com">Click here for our website</a>
+    </p>
+    """
     return body
 
 # ---------- Proposal Mode ----------
@@ -268,14 +381,20 @@ if mode == "Proposal":
     )
     st.text_area("Proposal Terms", proposal_notes, disabled=True)
 
-    pdf_data = build_pdf(pid, cust["name"], project_name, project_location,
-                         items, subtotal, 0, subtotal, None,
-                         show_paid=False, notes=proposal_notes, is_proposal=True)
+    pdf_data = build_pdf(
+        pid, cust["name"], project_name, project_location,
+        items, subtotal, 0, subtotal, None,
+        show_paid=False, notes=proposal_notes, is_proposal=True,
+        signature_png_bytes=signature_bytes, signature_date_text=signature_date_text
+    )
 
-    c1,c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button("📄 Download Proposal PDF", pdf_data, file_name=f"Proposal_{pid}.pdf", mime="application/pdf")
     with c2:
+        if st.button("👀 View Proposal PDF"):
+            show_pdf_inline(pdf_data)
+    with c3:
         if st.button("📧 Email Proposal"):
             msg = EmailMessage()
             msg["From"] = FROM_EMAIL
@@ -320,14 +439,20 @@ if mode == "Invoice":
         st.write(f"**Deposit: -${deposit:,.2f}**")
     st.write(f"**Grand Total: ${grand_total:,.2f}**")
 
-    pdf_data = build_pdf(invoice_no, cust["name"], project_name, project_location,
-                         items, subtotal, deposit, grand_total, check_number,
-                         show_paid=show_paid, notes=None, is_proposal=False)
+    pdf_data = build_pdf(
+        invoice_no, cust["name"], project_name, project_location,
+        items, subtotal, deposit, grand_total, check_number,
+        show_paid=show_paid, notes=None, is_proposal=False,
+        signature_png_bytes=signature_bytes, signature_date_text=signature_date_text
+    )
 
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button("📄 Download Invoice PDF", pdf_data, file_name=f"Invoice_{invoice_no}.pdf", mime="application/pdf")
     with c2:
+        if st.button("👀 View Invoice PDF"):
+            show_pdf_inline(pdf_data)
+    with c3:
         if st.button("📧 Email Invoice"):
             msg = EmailMessage()
             msg["From"] = FROM_EMAIL
@@ -342,24 +467,68 @@ if mode == "Invoice":
                 st.success("Invoice emailed")
             except Exception as e:
                 st.error(f"Email failed: {e}")
-    with c3:
-        if st.button("💾 Save Invoice"):
-            with engine.begin() as conn:
-                conn.execute(text("""
-                    INSERT INTO invoices (invoice_no, customer_id, project_name, project_location, items_json, deposit, check_number, total, paid)
-                    VALUES (:inv, :cid, :pname, :ploc, :items, :dep, :chk, :total, :paid)
-                    ON CONFLICT (invoice_no) DO UPDATE
-                    SET customer_id=EXCLUDED.customer_id,
-                        project_name=EXCLUDED.project_name,
-                        project_location=EXCLUDED.project_location,
-                        items_json=EXCLUDED.items_json,
-                        deposit=EXCLUDED.deposit,
-                        check_number=EXCLUDED.check_number,
-                        total=EXCLUDED.total,
-                        paid=EXCLUDED.paid
-                """), dict(inv=invoice_no, cid=cust["id"], pname=project_name, ploc=project_location,
-                           items=json.dumps(items), dep=float(deposit), chk=check_number,
-                           total=grand_total, paid=bool(show_paid)))
-            st.success(f"Invoice {invoice_no} saved!")
+
+    if st.button("💾 Save Invoice"):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO invoices (invoice_no, customer_id, project_name, project_location, items_json, deposit, check_number, total, paid)
+                VALUES (:inv, :cid, :pname, :ploc, :items, :dep, :chk, :total, :paid)
+                ON CONFLICT (invoice_no) DO UPDATE
+                SET customer_id=EXCLUDED.customer_id,
+                    project_name=EXCLUDED.project_name,
+                    project_location=EXCLUDED.project_location,
+                    items_json=EXCLUDED.items_json,
+                    deposit=EXCLUDED.deposit,
+                    check_number=EXCLUDED.check_number,
+                    total=EXCLUDED.total,
+                    paid=EXCLUDED.paid
+            """), dict(inv=invoice_no, cid=cust["id"], pname=project_name, ploc=project_location,
+                       items=json.dumps(items), dep=float(deposit), chk=check_number,
+                       total=grand_total, paid=bool(show_paid)))
+        st.success(f"Invoice {invoice_no} saved!")
+
+    # ---------- Active Proposals Dashboard ----------
+    st.subheader("Active Proposals")
+    with engine.begin() as conn:
+        active_props = conn.execute(
+            text("SELECT * FROM proposals WHERE status='open' ORDER BY created_at DESC")
+        ).mappings().all()
+
+    if not active_props:
+        st.info("No active proposals.")
+    else:
+        for prop in active_props:
+            st.markdown(f"**{prop['id']}** — {prop['project_name'] or ''} ({prop['project_location'] or ''})")
+            col1, col2, col3 = st.columns([1,1,2])
+            with col1:
+                if st.button(f"Convert {prop['id']}", key=f"conv_{prop['id']}"):
+                    # Prefill fields from the proposal, then mark converted and refresh
+                    st.session_state.project_name = prop["project_name"] or ""
+                    st.session_state.project_location = prop["project_location"] or ""
+                    st.session_state.prefill_items = json.loads(prop["items_json"] or "[]")
+                    st.session_state.prefill_customer_id = prop["customer_id"]
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE proposals SET status='converted' WHERE id=:pid"), {"pid": prop["id"]})
+                    st.success(f"Proposal {prop['id']} converted — fields above pre-filled.")
+                    st.rerun()
+            with col2:
+                if st.button(f"Close {prop['id']}", key=f"close_{prop['id']}"):
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE proposals SET status='closed' WHERE id=:pid"), {"pid": prop['id']})
+                    st.warning(f"Proposal {prop['id']} closed.")
+                    st.rerun()
+            with col3:
+                # Quick View PDF for proposal (no conversion)
+                if st.button(f"View {prop['id']} PDF", key=f"view_{prop['id']}"):
+                    prop_items = json.loads(prop["items_json"] or "[]")
+                    # Load customer name for proposal quick view
+                    cust_name = next((c["name"] for c in customers if c["id"] == prop["customer_id"]), "Customer")
+                    pdf_quick = build_pdf(
+                        prop["id"], cust_name, prop["project_name"], prop["project_location"],
+                        prop_items, compute_subtotal(prop_items), 0, compute_subtotal(prop_items), None,
+                        show_paid=False, notes=prop.get("notes"), is_proposal=True,
+                        signature_png_bytes=None, signature_date_text=None
+                    )
+                    show_pdf_inline(pdf_quick, height=800)
 # app.py (Invoicing App with Postgres)
 # Full Streamlit code provided in chat previously
