@@ -262,7 +262,10 @@ def build_pdf(ref_no, cust_name, project_name, project_location, items,
     c.save()
     buf.seek(0)
     return buf.getvalue()
+
 # ===== PROPOSAL TAB =====
+prop_tab, inv_tab =st.tabs(["Proposal", "Invoice"])
+
 with prop_tab:
     st.subheader("Create Proposal")
 
