@@ -411,15 +411,21 @@ with inv_tab:
     if not cust["id"]:
         st.warning("Please select a customer before saving.")
 
-    # Invoice number
+    # Handle invoice numbering
     with engine.begin() as conn:
         max_all = _max_existing_number(conn)
-    inv_no = format_inv_id(max_all + 1)
+
+    # Use proposal number if prefilled, otherwise auto-increment
+    if ss.get("prefill_proposal_number"):
+        inv_no = format_inv_id(ss.prefill_proposal_number)
+    else:
+        inv_no = format_inv_id(max_all + 1)
+
     inv_no = st.text_input("Invoice #", inv_no, key="i_inv_no")
 
     # Project info
-    project_name = st.text_input("Project Name", "", key="i_project_name")
-    project_location = st.text_input("Project Location (Address)", "", key="i_project_location")
+    project_name = st.text_input("Project Name", ss.get("project_name_value", ""), key="i_project_name")
+    project_location = st.text_input("Project Location (Address)", ss.get("project_location_value", ""), key="i_project_location")
 
     # Line items
     st.markdown("**Line Items**")
@@ -446,7 +452,7 @@ with inv_tab:
     grand_total = max(0.0, subtotal - deposit)
     invoice_notes = "Thank you for your business!"
 
-    # Signature (Invoice)
+    # Signature
     st.subheader("Signature (optional)")
     invoice_sig_bytes = None
     if st.toggle("Add Signature to Invoice", key="i_sig_toggle"):
@@ -467,16 +473,17 @@ with inv_tab:
             sig_img.save(buf, format="PNG")
             invoice_sig_bytes = buf.getvalue()
 
-    # PDF
+    # Build PDF
     pdf_data = build_pdf(
         ref_no=inv_no, cust_name=cust["name"] if cust["id"] else "",
         project_name=project_name, project_location=project_location,
-        items=items, subtotal=subtotal, deposit=deposit, grand_total=grand_total, check_number=chk_no,
-        show_paid=show_paid, notes=invoice_notes, is_proposal=False,
-        signature_png_bytes=invoice_sig_bytes,
+        items=items, subtotal=subtotal, deposit=deposit, grand_total=grand_total,
+        check_number=chk_no, show_paid=show_paid, notes=invoice_notes,
+        is_proposal=False, signature_png_bytes=invoice_sig_bytes,
         signature_date_text=datetime.now().strftime("%m/%d/%Y") if invoice_sig_bytes else None
     )
 
+    # Actions
     cA, cB, cC = st.columns(3)
     with cA:
         st.download_button("📄 Download Invoice", pdf_data, file_name=f"Invoice_{inv_no}.pdf", key="i_dl_btn")
@@ -493,6 +500,7 @@ with inv_tab:
             except Exception as e:
                 st.error(f"Email failed: {e}")
 
+    # Save invoice
     if st.button("💾 Save Invoice", key="i_save_btn") and cust["id"]:
         try:
             number_part = int(inv_no.split("-")[-1])
@@ -525,8 +533,7 @@ with inv_tab:
     st.subheader("🧾 Recent Invoices")
     with engine.begin() as conn:
         invs = conn.execute(text("""
-            SELECT invoice_no, customer_id, project_name, total, paid, created_at
-            FROM invoices ORDER BY created_at DESC LIMIT 20
+            SELECT * FROM invoices ORDER BY created_at DESC LIMIT 20
         """)).mappings().all()
     if not invs:
         st.info("No invoices yet.")
@@ -537,30 +544,36 @@ with inv_tab:
                 st.write(f"Total: ${float(inv['total'] or 0):,.2f}")
                 st.write("Paid: ✅" if inv["paid"] else "Paid: ❌")
 
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 if c1.button("Mark Paid / Unpaid", key=f"toggle_{inv['invoice_no']}"):
                     with engine.begin() as conn:
                         conn.execute(text("UPDATE invoices SET paid = NOT paid WHERE invoice_no=:id"),
                                      {"id": inv["invoice_no"]})
                     st.rerun()
-
                 if c2.button("View PDF", key=f"view_{inv['invoice_no']}"):
-                    with engine.begin() as conn:
-                        row = conn.execute(text("SELECT * FROM invoices WHERE invoice_no=:id"),
-                                           {"id": inv["invoice_no"]}).mappings().first()
-                    cust_name = next((c["name"] for c in customers if c["id"] == row["customer_id"]), row["customer_id"])
-                    items_pdf = json.loads(row["items_json"] or "[]")
+                    items_pdf = json.loads(inv["items_json"] or "[]")
                     subtotal_pdf = compute_subtotal(items_pdf)
                     pdf = build_pdf(
-                        ref_no=row["invoice_no"], cust_name=cust_name,
-                        project_name=row.get("project_name"), project_location=row.get("project_location"),
-                        items=items_pdf, subtotal=subtotal_pdf, deposit=row.get("deposit") or 0,
-                        grand_total=row.get("total") or subtotal_pdf, check_number=row.get("check_number"),
-                        show_paid=bool(row.get("paid")), notes="Thank you for your business!", is_proposal=False
+                        ref_no=inv["invoice_no"], cust_name=next((c["name"] for c in customers if c["id"] == inv["customer_id"]), inv["customer_id"]),
+                        project_name=inv.get("project_name"), project_location=inv.get("project_location"),
+                        items=items_pdf, subtotal=subtotal_pdf, deposit=inv.get("deposit") or 0,
+                        grand_total=inv.get("total") or subtotal_pdf, check_number=inv.get("check_number"),
+                        show_paid=bool(inv.get("paid")), notes="Thank you for your business!", is_proposal=False
                     )
                     show_pdf_newtab(pdf)
+                if c3.download_button("📄 Download", data=build_pdf(
+                        ref_no=inv["invoice_no"], cust_name=next((c["name"] for c in customers if c["id"] == inv["customer_id"]), inv["customer_id"]),
+                        project_name=inv.get("project_name"), project_location=inv.get("project_location"),
+                        items=json.loads(inv["items_json"] or "[]"),
+                        subtotal=compute_subtotal(json.loads(inv["items_json"] or "[]")),
+                        deposit=inv.get("deposit") or 0,
+                        grand_total=inv.get("total") or 0,
+                        check_number=inv.get("check_number"),
+                        show_paid=bool(inv.get("paid")), notes="Thank you for your business!", is_proposal=False
+                    ), file_name=f"{inv['invoice_no']}.pdf", key=f"dl_{inv['invoice_no']}"):
+                    pass
 
-    # Converted proposals
+    # Converted proposals (now only loads, doesn’t auto-fill invoice form)
     st.markdown("---")
     st.subheader("📋 Converted Proposals")
     with engine.begin() as conn:
@@ -579,13 +592,9 @@ with inv_tab:
             with st.expander(f"{prop['id']} — {prop['project_name'] or ''}"):
                 st.write(f"Customer: {prop['customer_name']}")
                 st.write(f"Location: {prop['project_location'] or ''}")
-
-                if st.button(f"Load into Invoice Form", key=f"load_{prop['id']}"):
+                if st.button(f"Load Proposal into Invoice Form", key=f"load_{prop['id']}"):
                     ss.prefill_items = json.loads(prop["items_json"] or "[]")
                     ss.project_name_value = prop.get("project_name") or ""
                     ss.project_location_value = prop.get("project_location") or ""
                     ss.prefill_proposal_number = prop["number"]
-                    st.experimental_rerun()
-                
-# app.py (Invoicing App with Postgres)
-
+                    st.rerun()
