@@ -344,8 +344,9 @@ with prop_tab:
         next_n = _max_existing_number(conn) + 1
     st.caption(f"Next Proposal ID will be **{format_prop_id(next_n)}** when saved.")
 
-    # Signature (toolbar visible)
-    st.subheader("Signature (optional)")
+# Signature (toggle)
+st.subheader("Signature (optional)")
+if st.toggle("Add Signature to Proposal", key="p_sig_toggle"):
     canvas_result = st_canvas(
         fill_color="rgba(255,255,255,0)",
         stroke_width=2,
@@ -354,7 +355,7 @@ with prop_tab:
         width=400,
         height=120,
         drawing_mode="freedraw",
-        key="proposal_sig_canvas",
+        key="p_sig_canvas",
         display_toolbar=True
     )
     sig_bytes = None
@@ -364,6 +365,8 @@ with prop_tab:
         buf = io.BytesIO()
         sig_img.save(buf, format="PNG")
         sig_bytes = buf.getvalue()
+else:
+    sig_bytes = None
 
     # Build PDF preview
     pdf_data = build_pdf(
@@ -501,8 +504,9 @@ with inv_tab:
     grand_total = max(0.0, subtotal - deposit)
     invoice_notes = "Thank you for your business!"
 
-    # Signature
-    st.subheader("Signature (optional)")
+# Signature (toggle)
+st.subheader("Signature (optional)")
+if st.toggle("Add Signature to Invoice", key="i_sig_toggle"):
     canvas_result = st_canvas(
         fill_color="rgba(255,255,255,0)",
         stroke_width=2,
@@ -511,7 +515,7 @@ with inv_tab:
         width=400,
         height=120,
         drawing_mode="freedraw",
-        key="invoice_sig_canvas",
+        key="i_sig_canvas",
         display_toolbar=True
     )
     sig_bytes = None
@@ -521,6 +525,8 @@ with inv_tab:
         buf = io.BytesIO()
         sig_img.save(buf, format="PNG")
         sig_bytes = buf.getvalue()
+else:
+    sig_bytes = None
 
     pdf_data = build_pdf(
         ref_no=inv_no, cust_name=cust["name"] if cust["id"] else "",
