@@ -76,7 +76,39 @@ def init_db():
             );
         """))
 init_db()
+# ---- DB Migration ----
+def migrate_db():
+    with engine.begin() as conn:
+        # Check if proposals.number exists
+        res = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='proposals' AND column_name='number'
+        """)).fetchone()
+        if not res:
+            conn.execute(text("ALTER TABLE proposals ADD COLUMN number INTEGER"))
+            conn.execute(text("""
+                UPDATE proposals
+                SET number = CAST(REGEXP_REPLACE(id, '\\D', '', 'g') AS INTEGER)
+                WHERE number IS NULL
+            """))
 
+        # Check if invoices.number exists
+        res = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='invoices' AND column_name='number'
+        """)).fetchone()
+        if not res:
+            conn.execute(text("ALTER TABLE invoices ADD COLUMN number INTEGER"))
+            conn.execute(text("""
+                UPDATE invoices
+                SET number = CAST(REGEXP_REPLACE(invoice_no, '\\D', '', 'g') AS INTEGER)
+                WHERE number IS NULL
+            """))
+
+# Run migrations
+migrate_db()
 # ---- Session defaults ----
 ss = st.session_state
 ss.setdefault("prefill_items", [])
