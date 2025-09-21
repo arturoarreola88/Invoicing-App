@@ -344,8 +344,9 @@ with prop_tab:
         next_n = _max_existing_number(conn) + 1
     st.caption(f"Next Proposal ID will be **{format_prop_id(next_n)}** when saved.")
 
-# Signature (toggle)
+# Proposal Signature (toggle)
 st.subheader("Signature (optional)")
+proposal_sig_bytes = None
 if st.toggle("Add Signature to Proposal", key="p_sig_toggle"):
     canvas_result = st_canvas(
         fill_color="rgba(255,255,255,0)",
@@ -358,15 +359,12 @@ if st.toggle("Add Signature to Proposal", key="p_sig_toggle"):
         key="p_sig_canvas",
         display_toolbar=True
     )
-    sig_bytes = None
     if canvas_result.image_data is not None:
         arr = (canvas_result.image_data[:, :, :3] * 255).astype("uint8")
         sig_img = Image.fromarray(arr)
         buf = io.BytesIO()
         sig_img.save(buf, format="PNG")
-        sig_bytes = buf.getvalue()
-else:
-    sig_bytes = None
+        proposal_sig_bytes = buf.getvalue()
 
     # Build PDF preview
     pdf_data = build_pdf(
@@ -377,7 +375,7 @@ else:
         items=items,
         subtotal=subtotal, deposit=0, grand_total=subtotal, check_number=None,
         show_paid=False, notes=notes, is_proposal=True,
-        signature_png_bytes=sig_bytes, signature_date_text=None
+        signature_png_bytes=proposal_sig_bytes, signature_date_text=None
     )
 
     cA, cB, cC = st.columns(3)
@@ -504,8 +502,9 @@ with inv_tab:
     grand_total = max(0.0, subtotal - deposit)
     invoice_notes = "Thank you for your business!"
 
-# Signature (toggle)
+# Invoice Signature (toggle)
 st.subheader("Signature (optional)")
+invoice_sig_bytes = None
 if st.toggle("Add Signature to Invoice", key="i_sig_toggle"):
     canvas_result = st_canvas(
         fill_color="rgba(255,255,255,0)",
@@ -518,22 +517,19 @@ if st.toggle("Add Signature to Invoice", key="i_sig_toggle"):
         key="i_sig_canvas",
         display_toolbar=True
     )
-    sig_bytes = None
     if canvas_result.image_data is not None:
         arr = (canvas_result.image_data[:, :, :3] * 255).astype("uint8")
         sig_img = Image.fromarray(arr)
         buf = io.BytesIO()
         sig_img.save(buf, format="PNG")
-        sig_bytes = buf.getvalue()
-else:
-    sig_bytes = None
+        invoice_sig_bytes = buf.getvalue()
 
     pdf_data = build_pdf(
         ref_no=inv_no, cust_name=cust["name"] if cust["id"] else "",
         project_name=project_name, project_location=project_location,
         items=items, subtotal=subtotal, deposit=deposit, grand_total=grand_total, check_number=chk_no,
         show_paid=show_paid, notes=invoice_notes, is_proposal=False,
-        signature_png_bytes=sig_bytes, signature_date_text=datetime.now().strftime("%m/%d/%Y") if sig_bytes else None
+        signature_png_bytes=invoice_sig_bytes, signature_date_text=datetime.now().strftime("%m/%d/%Y") if invoice_sig_bytes else None
     )
 
     cA, cB, cC = st.columns(3)
