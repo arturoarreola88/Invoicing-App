@@ -448,5 +448,6 @@ else:
                                      subtotal=compute_subtotal(json.loads(prop["items_json"] or "[]")),
                                      deposit=0, grand_total=0, check_number=None,
                                      is_proposal=True, notes=prop.get("notes"))
-                show_pdf_inline(pdf_data)        # app.py (Invoicing App with Postgres)
+                
+# app.py (Invoicing App with Postgres)
 # Full Streamlit code provided in chat previously
