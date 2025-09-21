@@ -377,7 +377,7 @@ with prop_tab:
                 st.write(f"Customer ID: {prop['customer_id']}")
                 st.write(f"Location: {prop.get('project_location') or ''}")
                 c1, c2, c3 = st.columns(3)
-
+                
                 if c1.button("Convert to Invoice", key=f"conv_{prop['id']}"):
                     prefill_from_proposal(prop)
                     with engine.begin() as conn:
@@ -385,7 +385,7 @@ with prop_tab:
                         conn.execute(text("""
                             INSERT INTO invoices (invoice_no, number, customer_id, project_name, project_location, items_json, total, deposit, check_number, paid)
                             VALUES (:inv,:n,:cid,:pname,:ploc,:items,0,0,NULL,FALSE)
-                            ON CONFLICT (number) DO NOTHING
+                            ON CONFLICT (invoice_no) DO NOTHING
                         """), dict(inv=inv_no, n=prop["number"], cid=prop["customer_id"],
                                    pname=prop.get("project_name"), ploc=prop.get("project_location"),
                                    items=prop["items_json"]))
