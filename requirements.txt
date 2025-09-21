@@ -1,0 +1,4 @@
+streamlit
+reportlab
+SQLAlchemy
+psycopg2-binary
