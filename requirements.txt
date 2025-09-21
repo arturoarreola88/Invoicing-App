@@ -4,3 +4,4 @@ SQLAlchemy
 psycopg2-binary
 streamlit-drawable-canvas
 Pillow
+numpy
