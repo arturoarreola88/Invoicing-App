@@ -7,7 +7,7 @@ from reportlab.lib.units import inch
 from sqlalchemy import create_engine, text
 
 st.set_page_config(page_title="J&I Invoicing", page_icon="🧾", layout="centered")
-st.title("🧾 J&I Invoicing — Postgres Edition")
+st.title("🧾 J&I Invoicing — Proposals & Invoices")
 
 # Database connection
 DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))
@@ -36,6 +36,15 @@ def init_db():
             );
         """))
         conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS proposals (
+                id TEXT PRIMARY KEY,
+                customer_id TEXT NOT NULL REFERENCES customers(id),
+                project TEXT,
+                items_json TEXT DEFAULT '[]',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """))
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS invoices (
                 id SERIAL PRIMARY KEY,
                 invoice_no TEXT UNIQUE,
@@ -49,126 +58,221 @@ def init_db():
         """))
 init_db()
 
-# Add customer
-st.subheader("Customers")
-with st.form("cust_form"):
-    cid = st.text_input("Customer ID")
-    cname = st.text_input("Name")
-    cemail = st.text_input("Email")
-    cphone = st.text_input("Phone")
-    caddr = st.text_input("Address")
-    ccity = st.text_input("City/State/Zip")
-    submitted = st.form_submit_button("Save Customer")
-    if submitted and cid and cname:
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO customers(id,name,email,phone,address,city_state_zip)
-                VALUES(:id,:name,:email,:phone,:addr,:csz)
-                ON CONFLICT(id) DO UPDATE
-                SET name=EXCLUDED.name, email=EXCLUDED.email,
-                    phone=EXCLUDED.phone, address=EXCLUDED.address,
-                    city_state_zip=EXCLUDED.city_state_zip
-            """), dict(id=cid, name=cname, email=cemail, phone=cphone, addr=caddr, csz=ccity))
-        st.success(f"Saved {cname}")
+# Mode switch
+mode = st.radio("Choose Mode", ["Proposal", "Invoice"], horizontal=True)
 
-# Fetch customers
+# Customers
 with engine.begin() as conn:
     customers = conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
-
 if not customers:
-    st.info("No customers yet")
+    st.warning("No customers yet. Add them using the Intake Form or directly in Supabase.")
     st.stop()
 
 # Select customer
-st.subheader("Invoice Builder")
-cust = st.selectbox("Select Customer", customers, format_func=lambda c: c['name'])
-invoice_no = st.text_input("Invoice #", "1001")
-project = st.text_input("Project / Job", "")
-show_paid = st.toggle("Show PAID Stamp", value=False)
+cust = st.selectbox("Select Customer", customers, format_func=lambda c: c["name"])
 
-# Items
+project = st.text_input("Project / Job", "")
 items = []
 st.write("Line Items")
 for i in range(5):
     cols = st.columns([5,1,2,2])
-    desc = cols[0].text_input(f"Description {i+1}")
-    qty = cols[1].number_input(f"Qty {i+1}", 0, 100, 1)
-    unit = cols[2].number_input(f"Unit Price {i+1}", 0.0, 10000.0, 0.0)
+    desc = cols[0].text_input(f"Description {i+1}", key=f"desc_{mode}_{i}")
+    qty = cols[1].number_input(f"Qty {i+1}", 0, 100, 1, key=f"qty_{mode}_{i}")
+    unit = cols[2].number_input(f"Unit Price {i+1}", 0.0, 10000.0, 0.0, key=f"unit_{mode}_{i}")
     total = qty * unit
     cols[3].write(f"${total:,.2f}")
     if desc.strip():
         items.append({"Description":desc,"Qty":qty,"Unit Price":unit})
 total_amount = sum(r["Qty"]*r["Unit Price"] for r in items)
-st.write(f"**Total: ${total_amount:,.2f}**")
 
-# PDF builder
-def build_pdf():
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=LETTER)
-    width, height = LETTER
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(1*inch, height-1*inch, "J & I Heating and Cooling")
-    c.setFont("Helvetica", 10)
-    c.drawString(1*inch, height-1.2*inch, "Invoice")
-    c.setFont("Helvetica", 12)
-    c.drawString(1*inch, height-1.6*inch, f"Invoice #: {invoice_no}")
-    c.drawString(1*inch, height-1.9*inch, f"Customer: {cust['name']}")
-    c.drawString(1*inch, height-2.2*inch, f"Project: {project}")
-    y = height-2.7*inch
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(1*inch, y, "Description")
-    c.drawString(4*inch, y, "Qty")
-    c.drawString(5*inch, y, "Unit")
-    c.drawString(6*inch, y, "Line Total")
-    y -= 14
-    c.setFont("Helvetica", 10)
-    for row in items:
-        c.drawString(1*inch, y, row["Description"])
-        c.drawString(4*inch, y, str(row["Qty"]))
-        c.drawString(5*inch, y, f"${row['Unit Price']:.2f}")
-        c.drawString(6*inch, y, f"${row['Qty']*row['Unit Price']:.2f}")
-        y -= 14
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(5*inch, y-10, "Total:")
-    c.drawString(6*inch, y-10, f"${total_amount:,.2f}")
-    if show_paid:
-        c.setFont("Helvetica-Bold", 72)
-        c.setFillColorRGB(1,0,0)
-        c.drawCentredString(width/2, height/2, "PAID")
-    c.save()
-    buf.seek(0)
-    return buf.getvalue()
-
-col1,col2,col3 = st.columns(3)
-with col1:
-    if st.button("Download PDF"):
-        st.download_button("Save PDF", build_pdf(), file_name=f"Invoice_{invoice_no}.pdf")
-with col2:
-    if st.button("Email Invoice"):
-        if not APP_PASSWORD:
-            st.error("APP_PASSWORD missing")
-        else:
-            msg = EmailMessage()
-            msg["From"] = FROM_EMAIL
-            msg["To"] = cust["email"]
-            msg["Subject"] = f"Invoice {invoice_no}"
-            msg.set_content("Please find attached invoice.")
-            msg.add_attachment(build_pdf(), maintype="application", subtype="pdf", filename=f"Invoice_{invoice_no}.pdf")
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                server.login(FROM_EMAIL, APP_PASSWORD)
-                server.send_message(msg)
-            st.success("Invoice emailed")
-with col3:
-    if st.button("Save Invoice"):
+# Proposal mode
+if mode == "Proposal":
+    pid = st.text_input("Proposal ID", "P-1001")
+    if st.button("💾 Save Proposal"):
         with engine.begin() as conn:
             conn.execute(text("""
-                INSERT INTO invoices(invoice_no,customer_id,project,items_json,total,paid)
-                VALUES(:inv,:cid,:proj,:items,:total,:paid)
-                ON CONFLICT(invoice_no) DO UPDATE
-                SET customer_id=EXCLUDED.customer_id, project=EXCLUDED.project,
-                    items_json=EXCLUDED.items_json, total=EXCLUDED.total, paid=EXCLUDED.paid
-            """), dict(inv=invoice_no, cid=cust["id"], proj=project, items=json.dumps(items),
-                       total=total_amount, paid=show_paid))
-        st.success("Invoice saved")
+                INSERT INTO proposals(id,customer_id,project,items_json)
+                VALUES(:id,:cid,:proj,:items)
+                ON CONFLICT(id) DO UPDATE
+                SET customer_id=EXCLUDED.customer_id,
+                    project=EXCLUDED.project,
+                    items_json=EXCLUDED.items_json
+            """), dict(id=pid, cid=cust["id"], proj=project, items=json.dumps(items)))
+        st.success(f"Proposal {pid} saved!")
+
+    # Proposal Dashboard
+    st.subheader("📑 Proposal Dashboard")
+    with engine.begin() as conn:
+        props = conn.execute(text("""
+            SELECT p.*, c.name AS customer_name
+            FROM proposals p
+            JOIN customers c ON c.id=p.customer_id
+            ORDER BY p.created_at DESC
+        """)).mappings().all()
+
+    if not props:
+        st.info("No proposals saved yet.")
+    else:
+        for p in props:
+            st.markdown(f"""
+            **Proposal ID:** {p['id']}  
+            **Customer:** {p['customer_name']}  
+            **Project:** {p['project'] or "—"}  
+            **Created:** {p['created_at']}  
+            """)
+            items_list = json.loads(p["items_json"])
+            if items_list:
+                st.write("Items:")
+                for row in items_list:
+                    st.write(f"- {row['Description']} — {row['Qty']} × ${row['Unit Price']:.2f}")
+
+            # Convert to Invoice button
+            if st.button(f"Convert {p['id']} to Invoice"):
+                new_invoice_no = f"INV-{p['id']}"
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        INSERT INTO invoices(invoice_no,customer_id,project,items_json,total,paid)
+                        VALUES(:inv,:cid,:proj,:items,:total,:paid)
+                        ON CONFLICT(invoice_no) DO UPDATE
+                        SET customer_id=EXCLUDED.customer_id,
+                            project=EXCLUDED.project,
+                            items_json=EXCLUDED.items_json,
+                            total=EXCLUDED.total,
+                            paid=EXCLUDED.paid
+                    """), dict(
+                        inv=new_invoice_no,
+                        cid=p["customer_id"],
+                        proj=p["project"],
+                        items=p["items_json"],
+                        total=sum(row["Qty"]*row["Unit Price"] for row in json.loads(p["items_json"])),
+                        paid=False
+                    ))
+                st.success(f"Proposal {p['id']} converted to Invoice {new_invoice_no}!")
+
+            st.divider()
+
+# Invoice mode
+if mode == "Invoice":
+    choice = st.radio("Invoice Type", ["New Invoice", "Convert from Proposal"], horizontal=True)
+    invoice_no = st.text_input("Invoice #", "1001")
+    show_paid = st.toggle("Show PAID Stamp", value=False)
+
+    # Load from proposal
+    if choice == "Convert from Proposal":
+        with engine.begin() as conn:
+            props = conn.execute(text("""
+                SELECT p.*, c.name AS customer_name
+                FROM proposals p
+                JOIN customers c ON c.id=p.customer_id
+                ORDER BY p.created_at DESC
+            """)).mappings().all()
+        if not props:
+            st.info("No proposals available")
+        else:
+            selected = st.selectbox("Select Proposal", props, format_func=lambda p: f"{p['id']} - {p['customer_name']}")
+            project = selected["project"]
+            items = json.loads(selected["items_json"])
+
+    st.write(f"**Total: ${total_amount:,.2f}**")
+
+    # PDF builder
+    def build_pdf():
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=LETTER)
+        width, height = LETTER
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(1*inch, height-1*inch, "J & I Heating and Cooling")
+        c.setFont("Helvetica", 12)
+        c.drawString(1*inch, height-1.3*inch, f"Invoice #: {invoice_no}")
+        c.drawString(1*inch, height-1.6*inch, f"Customer: {cust['name']}")
+        c.drawString(1*inch, height-1.9*inch, f"Project: {project}")
+        y = height-2.3*inch
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(1*inch, y, "Description")
+        c.drawString(4*inch, y, "Qty")
+        c.drawString(5*inch, y, "Unit")
+        c.drawString(6*inch, y, "Line Total")
+        y -= 14
+        c.setFont("Helvetica", 10)
+        for row in items:
+            c.drawString(1*inch, y, row["Description"])
+            c.drawString(4*inch, y, str(row["Qty"]))
+            c.drawString(5*inch, y, f"${row['Unit Price']:.2f}")
+            c.drawString(6*inch, y, f"${row['Qty']*row['Unit Price']:.2f}")
+            y -= 14
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(5*inch, y-10, "Total:")
+        c.drawString(6*inch, y-10, f"${total_amount:,.2f}")
+        if show_paid:
+            c.setFont("Helvetica-Bold", 72)
+            c.setFillColorRGB(1,0,0)
+            c.drawCentredString(width/2, height/2, "PAID")
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+
+    col1,col2,col3 = st.columns(3)
+    with col1:
+        if st.button("📄 Download PDF"):
+            st.download_button("Save PDF", build_pdf(), file_name=f"Invoice_{invoice_no}.pdf")
+    with col2:
+        if st.button("📧 Email Invoice"):
+            if not APP_PASSWORD:
+                st.error("APP_PASSWORD missing")
+            else:
+                msg = EmailMessage()
+                msg["From"] = FROM_EMAIL
+                msg["To"] = cust["email"]
+                msg["Subject"] = f"Invoice {invoice_no}"
+                msg.set_content("Please find attached invoice.")
+                msg.add_attachment(build_pdf(), maintype="application", subtype="pdf", filename=f"Invoice_{invoice_no}.pdf")
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                    server.login(FROM_EMAIL, APP_PASSWORD)
+                    server.send_message(msg)
+                st.success("Invoice emailed")
+    with col3:
+        if st.button("💾 Save Invoice"):
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO invoices(invoice_no,customer_id,project,items_json,total,paid)
+                    VALUES(:inv,:cid,:proj,:items,:total,:paid)
+                    ON CONFLICT(invoice_no) DO UPDATE
+                    SET customer_id=EXCLUDED.customer_id,
+                        project=EXCLUDED.project,
+                        items_json=EXCLUDED.items_json,
+                        total=EXCLUDED.total,
+                        paid=EXCLUDED.paid
+                """), dict(inv=invoice_no, cid=cust["id"], proj=project,
+                           items=json.dumps(items), total=total_amount, paid=show_paid))
+            st.success(f"Invoice {invoice_no} saved!")
+
+    # Invoice Dashboard
+    st.subheader("📊 Invoice Dashboard")
+    with engine.begin() as conn:
+        invoices = conn.execute(text("""
+            SELECT i.*, c.name AS customer_name
+            FROM invoices i
+            JOIN customers c ON c.id=i.customer_id
+            ORDER BY i.created_at DESC
+        """)).mappings().all()
+
+    if not invoices:
+        st.info("No invoices saved yet.")
+    else:
+        for inv in invoices:
+            st.markdown(f"""
+            **Invoice #:** {inv['invoice_no']}  
+            **Customer:** {inv['customer_name']}  
+            **Project:** {inv['project'] or "—"}  
+            **Total:** ${inv['total']:.2f}  
+            **Paid:** {"✅ Yes" if inv['paid'] else "❌ No"}  
+            **Created:** {inv['created_at']}  
+            """)
+            items_list = json.loads(inv["items_json"])
+            if items_list:
+                st.write("Items:")
+                for row in items_list:
+                    st.write(f"- {row['Description']} — {row['Qty']} × ${row['Unit Price']:.2f}")
+            st.divider()
 # app.py (Invoicing App with Postgres)
 # Full Streamlit code provided in chat previously
