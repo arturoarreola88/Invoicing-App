@@ -325,6 +325,7 @@ prop_tab, inv_tab = st.tabs(["Proposal", "Invoice"])
 # =========================
 with prop_tab:
     st.subheader("Create Proposal")
+    current_tab = "proposal"
 
     # === CUSTOMER SELECTION ===
 st.subheader("Customer")
@@ -332,7 +333,7 @@ st.subheader("Customer")
 mode = st.radio(
     "Choose Option",
     ["Select Existing Customer", "➕ Add New Customer"],
-    key=f"{st.session_state.get('current_tab', 'unknown')}_cust_mode"
+    key=f"{current_tab}_cust_mode"
 )
 
 if mode == "Select Existing Customer":
@@ -341,7 +342,7 @@ if mode == "Select Existing Customer":
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
     cust = st.selectbox("Customer", cust_options, index=0,
                         format_func=lambda c: c["name"],
-                        key=f"{st.session_state.get('current_tab', 'unknown')}_cust_select")
+                        key=f"{current_tab}_cust_select")
     if not cust["id"]:
         st.warning("Please select a customer before saving.")
 
@@ -506,6 +507,7 @@ else:  # ➕ Add New Customer
 # =========================
 with inv_tab:
     st.subheader("Create / Manage Invoice")
+    current_tab = "invoice"
 
 # === CUSTOMER SELECTION ===
 st.subheader("Customer")
@@ -513,7 +515,7 @@ st.subheader("Customer")
 mode = st.radio(
     "Choose Option",
     ["Select Existing Customer", "➕ Add New Customer"],
-    key=f"{st.session_state.get('current_tab', 'unknown')}_cust_mode"
+    key=f"{current_tab}_cust_mode"
 )
 
 if mode == "Select Existing Customer":
@@ -522,7 +524,7 @@ if mode == "Select Existing Customer":
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
     cust = st.selectbox("Customer", cust_options, index=0,
                         format_func=lambda c: c["name"],
-                        key=f"{st.session_state.get('current_tab', 'unknown')}_cust_select")
+                        key=f"{current_tab}_cust_select")
     if not cust["id"]:
         st.warning("Please select a customer before saving.")
 
