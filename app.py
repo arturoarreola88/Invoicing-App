@@ -128,7 +128,14 @@ migrate_db()
 # SECTION: Session State + Helpers
 # =========================
 ss = st.session_state
+ss.setdefault("project_name_value", "")
+ss.setdefault("project_location_value", "")
+ss.setdefault("prefill_items", [])
+ss.setdefault("prefill_customer_id", None)
+ss.setdefault("prefill_proposal_number", None)
+ss.setdefault("prefill_proposal_id", None)
 ss.setdefault("line_count", 5)
+
 
 def add_line():
     ss.line_count += 1
