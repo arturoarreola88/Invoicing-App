@@ -436,7 +436,7 @@ with prop_tab:
         signature_png_bytes=proposal_sig_bytes, signature_date_text=datetime.now().strftime("%m/%d/%Y") if proposal_sig_bytes else None
     )
 
-    cA, cB, cC = st.columns(3)
+    cA, cB, cC, cD = st.columns(4)
     with cA:
         st.download_button("📄 Download Proposal", pdf_data, file_name=f"Proposal_{format_prop_id(next_n)}.pdf", key="p_dl_btn")
     with cB:
@@ -615,7 +615,7 @@ with inv_tab:
         signature_png_bytes=invoice_sig_bytes, signature_date_text=datetime.now().strftime("%m/%d/%Y") if invoice_sig_bytes else None
     )
 
-    cA, cB, cC = st.columns(3)
+    cA, cB, cC, cD = st.columns(4)
     with cA:
         st.download_button("📄 Download Invoice", pdf_data, file_name=f"Invoice_{inv_no}.pdf", key="i_dl_btn")
     with cB:
