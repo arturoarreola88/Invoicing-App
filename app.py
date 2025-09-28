@@ -455,7 +455,7 @@ with prop_tab:
             """), dict(id=pid, num=n, cid=cust["id"], pname=project_name, ploc=project_location,
                        items=json.dumps(items), notes=notes))
         st.success(f"Proposal {pid} saved!")
-            reset_proposal_form()
+    reset_proposal_form()
     with cD:
         if st.button("♻ Reset Form", key="p_reset_btn"):
             reset_proposal_form()
@@ -650,7 +650,7 @@ with inv_tab:
                            ploc=project_location, items=json.dumps(items),
                            total=grand_total, dep=deposit, chk=chk_no, paid=show_paid))
         st.success(f"Invoice {inv_no} saved!")
-                reset_invoice_form()
+    reset_invoice_form()
     with cD:
         if st.button("♻ Reset Form", key="i_reset_btn"):
             reset_invoice_form()
