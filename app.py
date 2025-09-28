@@ -1,3 +1,14 @@
+# =========================
+# J & I — Proposals & Invoices (Streamlit)
+# =========================
+# Features:
+# - Customers table
+# - Proposals: create, sign, PDF, email, save, active proposals
+# - Invoices: create, sign, PDF, email, save, mark paid/unpaid, recent invoices
+# - PDF layout tuned: wider spacing, Qty/Unit/Total aligned, PAID stamp with date
+# - Emails greet by FIRST name; includes website link
+# - Reset form after save/download/email to keep things clean
+
 import os, io, json, base64, textwrap, smtplib
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -11,18 +22,21 @@ from reportlab.lib.utils import ImageReader
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 
-# ----------------- CONFIG -----------------
 st.set_page_config(page_title="J&I Proposals & Invoices", page_icon="🧾", layout="centered")
 
-# Logo (also used in PDFs)
+# =========================
+# SECTION: Header + Branding
+# =========================
 try:
     st.image("logo.png", width=220)
 except:
-    st.write("⚠️ Place 'logo.png' next to app.py for header and PDFs.")
+    st.info("Tip: place a 'logo.png' next to app.py to show it in the header + PDFs.")
 
 st.title("🧾 J & I — Proposals & Invoices")
 
-# Secrets / Environment
+# =========================
+# SECTION: Secrets / Environment
+# =========================
 DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))
 FROM_EMAIL   = st.secrets.get("FROM_EMAIL",   os.getenv("FROM_EMAIL",   "jiheatingcooling.homerepairs@gmail.com"))
 SMTP_SERVER  = st.secrets.get("SMTP_SERVER",  os.getenv("SMTP_SERVER",  "smtp.gmail.com"))
@@ -30,12 +44,14 @@ SMTP_PORT    = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", 465)))
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", ""))
 
 if not DATABASE_URL:
-    st.error("DATABASE_URL not set")
+    st.error("DATABASE_URL not set in Secrets.")
     st.stop()
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
-# ----------------- DB INIT -----------------
+# =========================
+# SECTION: Database Init + (simple) Migration
+# =========================
 def init_db():
     with engine.begin() as conn:
         conn.execute(text("""
@@ -79,31 +95,64 @@ def init_db():
         """))
 init_db()
 
-# ----------------- STATE & HELPERS -----------------
+def migrate_db():
+    with engine.begin() as conn:
+        # add proposals.number if missing and backfill
+        res = conn.execute(text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='proposals' AND column_name='number'
+        """)).fetchone()
+        if not res:
+            conn.execute(text("ALTER TABLE proposals ADD COLUMN number INTEGER"))
+            conn.execute(text("""
+                UPDATE proposals
+                SET number = CAST(REGEXP_REPLACE(id, '\\D', '', 'g') AS INTEGER)
+                WHERE number IS NULL
+            """))
+
+        # add invoices.number if missing and backfill
+        res = conn.execute(text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='invoices' AND column_name='number'
+        """)).fetchone()
+        if not res:
+            conn.execute(text("ALTER TABLE invoices ADD COLUMN number INTEGER"))
+            conn.execute(text("""
+                UPDATE invoices
+                SET number = CAST(REGEXP_REPLACE(invoice_no, '\\D', '', 'g') AS INTEGER)
+                WHERE number IS NULL
+            """))
+migrate_db()
+
+# =========================
+# SECTION: Session State + Helpers
+# =========================
 ss = st.session_state
 ss.setdefault("line_count", 5)
-ss.setdefault("prefill_items", [])
-ss.setdefault("project_name_value", "")
-ss.setdefault("project_location_value", "")
-ss.setdefault("prefill_proposal_number", None)
 
-def add_line(): ss.line_count += 1
+def add_line():
+    ss.line_count += 1
 
-def prefill_from_proposal(prop):
-    ss.prefill_items = json.loads(prop["items_json"] or "[]")
-    ss.project_name_value = prop.get("project_name") or ""
-    ss.project_location_value = prop.get("project_location") or ""
-    ss.prefill_proposal_number = prop["number"]
+def reset_proposal_form():
+    keep = {}
+    for k,v in ss.items():
+        if not (isinstance(k,str) and k.startswith("p_")):
+            keep[k] = v
+    st.session_state.clear()
+    st.session_state.update(keep)
+    ss.setdefault("line_count", 5)
+
+def reset_invoice_form():
+    keep = {}
+    for k,v in ss.items():
+        if not (isinstance(k,str) and k.startswith("i_")):
+            keep[k] = v
+    st.session_state.clear()
+    st.session_state.update(keep)
+    ss.setdefault("line_count", 5)
 
 def compute_subtotal(items):
     return sum(float(r.get("Qty", 0)) * float(r.get("Unit Price", 0)) for r in items)
-
-def show_pdf_newtab(pdf_bytes):
-    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-    st.markdown(
-        f'<a href="data:application/pdf;base64,{b64}" target="_blank">📄 Open PDF in New Tab</a>',
-        unsafe_allow_html=True
-    )
 
 def _max_existing_number(conn):
     r1 = conn.execute(text("SELECT COALESCE(MAX(number), 0) FROM proposals")).scalar() or 0
@@ -113,12 +162,16 @@ def _max_existing_number(conn):
 def format_prop_id(n): return f"P-{n:04d}"
 def format_inv_id(n):  return f"INV-{n:04d}"
 
+# =========================
+# SECTION: Email
+# =========================
 def build_email_body(cust_name, is_proposal, ref_no):
-    greeting = "Good morning" if datetime.now().hour < 12 else "Good afternoon"
+    first = (cust_name or "Customer").split()[0]
     kind = "proposal" if is_proposal else "invoice"
     return f"""
-    <p>{greeting} {cust_name},</p>
-    <p>Attached is the {kind} ({ref_no}) you requested. Please review and contact me with any questions.</p>
+    <p>Hi {first},</p>
+    <p>Attached is the {kind} ({ref_no}) you requested. Please review and
+    contact me with any questions.</p>
     <p>Thank you for choosing J & I Heating and Cooling.</p>
     <hr>
     <p>
@@ -139,7 +192,9 @@ def send_email(pdf_bytes, to_email, subject, html_body, filename):
         server.login(FROM_EMAIL, APP_PASSWORD)
         server.send_message(msg)
 
-# ----------------- PDF BUILDER -----------------
+# =========================
+# SECTION: PDF Builder
+# =========================
 def build_pdf(ref_no, cust_name, project_name, project_location, items,
               subtotal, deposit, grand_total, check_number,
               show_paid=False, notes=None, is_proposal=False,
@@ -148,11 +203,10 @@ def build_pdf(ref_no, cust_name, project_name, project_location, items,
     c = canvas.Canvas(buf, pagesize=LETTER)
     width, height = LETTER
 
-    # Header with logo + company text
+    # Header
     try:
         logo = ImageReader("logo.png")
-        c.drawImage(logo, width - 100 - 0.5*inch, height - 60 - 0.5*inch,
-                    width=100, height=60, preserveAspectRatio=True, mask='auto')
+        c.drawImage(logo, width - 120, height - 80, width=100, height=60, mask='auto')
     except:
         pass
     c.setFont("Helvetica-Bold", 16)
@@ -174,63 +228,66 @@ def build_pdf(ref_no, cust_name, project_name, project_location, items,
     c.drawString(1*inch, height-2.7*inch, f"Project: {project_name or ''}")
     c.drawString(1*inch, height-2.9*inch, f"Location: {project_location or ''}")
 
-    right_x = width - 2.5*inch
+    rx = width - 2.5*inch
     c.setFont("Helvetica", 10)
-    c.drawString(right_x, height-2.3*inch, f"Date: {issue_date.strftime('%m/%d/%Y')}")
-    c.drawString(right_x, height-2.6*inch, terms_text)
+    c.drawString(rx, height-2.3*inch, f"Date: {issue_date.strftime('%m/%d/%Y')}")
+    c.drawString(rx, height-2.6*inch, terms_text)
 
-    # Paid stamp for invoices
+    # Paid stamp
     if show_paid and not is_proposal:
         c.setFont("Helvetica-Bold", 36)
-        c.setFillColorRGB(1, 0, 0)
+        c.setFillColorRGB(1,0,0)
         c.drawString(width/2 + 0.5*inch, height-3.0*inch, "PAID")
         c.setFont("Helvetica", 12)
         c.drawString(width/2 + 0.5*inch, height-3.4*inch, datetime.now().strftime("%m/%d/%Y"))
-        c.setFillColorRGB(0, 0, 0)
+        c.setFillColorRGB(0,0,0)
 
-    # Table header
+    # Table headers
     y = height-3.6*inch
     c.setFont("Helvetica-Bold", 10)
     c.drawString(1*inch, y, "Description")
-    c.drawString(4*inch, y, "Qty")
-    c.drawString(5*inch, y, "Unit")
-    c.drawString(6*inch, y, "Line Total")
+    c.drawString(4.4*inch, y, "Qty")
+    c.drawString(5.4*inch, y, "Unit")
+    c.drawString(6.4*inch, y, "Line Total")
     y -= 16
-
-    # Line items
     c.setFont("Helvetica", 10)
+
+    # Line items (wrapped + roomy spacing)
     for row in items:
         desc = str(row.get("Description", ""))
         wrapped = textwrap.wrap(desc, width=50)
         for j, line in enumerate(wrapped):
             c.drawString(1*inch, y, line)
             if j == 0:
-                qty = float(row.get("Qty", 0))
+                qty  = float(row.get("Qty", 0))
                 unit = float(row.get("Unit Price", 0))
-                c.drawString(4*inch, y, f"{qty:.2f}")
-                c.drawString(5*inch, y, f"${unit:.2f}")
-                c.drawString(6*inch, y, f"${qty*unit:.2f}")
+                c.drawString(4.4*inch, y, f"{qty:.2f}")
+                c.drawString(5.4*inch, y, f"${unit:,.2f}")
+                c.drawString(6.4*inch, y, f"${qty*unit:,.2f}")
             y -= 18
 
     # Totals
+    y -= 10
+    c.setFont("Helvetica-Bold", 11)
     if is_proposal:
         c.drawString(5*inch, y, "Subtotal:")
-        c.drawString(6*inch, y, f"${subtotal:,.2f}")
+        c.drawString(6.4*inch, y, f"${subtotal:,.2f}")
         y -= 18
         c.drawString(5*inch, y, "Grand Total:")
-        c.drawString(6*inch, y, f"${subtotal:,.2f}")
+        c.drawString(6.4*inch, y, f"${subtotal:,.2f}")
     else:
         c.drawString(5*inch, y, "Subtotal:")
-        c.drawString(6*inch, y, f"${subtotal:,.2f}")
+        c.drawString(6.4*inch, y, f"${subtotal:,.2f}")
         y -= 18
         if deposit and float(deposit) > 0:
             c.drawString(5*inch, y, "Deposit:")
-            c.drawString(6*inch, y, f"-${float(deposit):,.2f}")
+            c.drawString(6.4*inch, y, f"-${float(deposit):,.2f}")
             y -= 18
         c.drawString(5*inch, y, "Grand Total:")
-        c.drawString(6*inch, y, f"${grand_total:,.2f}")
+        c.drawString(6.4*inch, y, f"${grand_total:,.2f}")
         if check_number:
             y -= 18
+            c.setFont("Helvetica", 10)
             c.drawString(1*inch, y, f"Check #: {check_number}")
 
     # Notes
@@ -241,25 +298,31 @@ def build_pdf(ref_no, cust_name, project_name, project_location, items,
             c.drawString(1*inch, y, ln)
             y -= 14
 
-    # Signature area
+    # Signature (hide line if we have a drawn signature)
     y -= 40
-    c.setFont("Helvetica", 10)
-    c.drawString(1*inch, y, "X ____________________________")
-    c.drawString(4*inch, y, "Date: ________________________")
     if signature_png_bytes:
         sig_reader = ImageReader(io.BytesIO(signature_png_bytes))
-        c.drawImage(sig_reader, 1*inch, y-30, width=150, height=40, mask='auto')
-    if signature_date_text:
-        c.drawString(4.5*inch, y-15, signature_date_text)
+        c.drawImage(sig_reader, 1*inch, y, width=150, height=40, mask='auto')
+        if signature_date_text:
+            c.setFont("Helvetica", 10)
+            c.drawString(4.5*inch, y+15, f"Signed: {signature_date_text}")
+    else:
+        c.setFont("Helvetica", 10)
+        c.drawString(1*inch, y, "X ____________________________")
+        c.drawString(4*inch, y, "Date: ________________________")
 
     c.save()
     buf.seek(0)
     return buf.getvalue()
 
-# ----------------- UI -----------------
+# =========================
+# SECTION: Tabs
+# =========================
 prop_tab, inv_tab = st.tabs(["Proposal", "Invoice"])
 
-# ==== PROPOSAL TAB ====
+# =========================
+# SECTION: Proposal Tab
+# =========================
 with prop_tab:
     st.subheader("Create Proposal")
 
@@ -267,24 +330,23 @@ with prop_tab:
     with engine.begin() as conn:
         customers = conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
-    cust = st.selectbox("Customer", cust_options, index=0, key="proposal_customer_select",
+    cust = st.selectbox("Customer", cust_options, index=0, key="p_customer",
                         format_func=lambda c: c["name"])
+    if not cust["id"]:
+        st.warning("Select a customer before saving or emailing.")
 
-    # Project
-    project_name = st.text_input("Project Name", ss.project_name_value, key="p_project_name")
-    project_location = st.text_input("Project Location (Address)", ss.project_location_value, key="p_project_location")
+    # Project fields
+    project_name     = st.text_input("Project Name", key="p_project_name")
+    project_location = st.text_input("Project Location (Address)", key="p_project_location")
 
     # Line items
+    st.markdown("**Line Items**")
     items = []
-    prefill = ss.prefill_items or []
     for i in range(ss.line_count):
-        d = prefill[i]["Description"] if i < len(prefill) else ""
-        q = float(prefill[i]["Qty"]) if i < len(prefill) else 1.0
-        u = float(prefill[i]["Unit Price"]) if i < len(prefill) else 0.0
         c1, c2, c3, c4 = st.columns([5,1.5,2,2])
-        desc = c1.text_input(f"Description {i+1}", d, key=f"p_desc_{i}")
-        qty  = c2.number_input(f"Qty {i+1}", min_value=0.0, value=q, step=1.0, key=f"p_qty_{i}")
-        unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, value=u, step=10.0, key=f"p_unit_{i}")
+        desc = c1.text_input(f"Description {i+1}", key=f"p_desc_{i}")
+        qty  = c2.number_input(f"Qty {i+1}",  min_value=0.0, step=1.0, key=f"p_qty_{i}")
+        unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, step=10.0, key=f"p_unit_{i}")
         c4.write(f"${qty*unit:,.2f}")
         if str(desc).strip():
             items.append({"Description": desc, "Qty": qty, "Unit Price": unit})
@@ -303,16 +365,16 @@ with prop_tab:
         next_n = _max_existing_number(conn) + 1
     st.caption(f"Next Proposal ID will be **{format_prop_id(next_n)}** when saved.")
 
-    # Signature (Proposal)
+    # Signature (optional)
     st.subheader("Signature (optional)")
-    proposal_sig_bytes = None
+    proposal_sig_bytes, sig_date = None, None
     if st.toggle("Add Signature to Proposal", key="p_sig_toggle"):
         canvas_result = st_canvas(
             fill_color="rgba(255,255,255,0)",
             stroke_width=2,
             stroke_color="black",
             background_color="white",
-            width=400, height=120,
+            width=420, height=140,
             drawing_mode="freedraw",
             key="p_sig_canvas",
             display_toolbar=True
@@ -323,8 +385,9 @@ with prop_tab:
             buf = io.BytesIO()
             sig_img.save(buf, format="PNG")
             proposal_sig_bytes = buf.getvalue()
+            sig_date = datetime.now().strftime("%m/%d/%Y")
 
-    # Build Proposal PDF (always)
+    # Build proposal PDF
     pdf_data = build_pdf(
         ref_no=format_prop_id(next_n),
         cust_name=cust["name"] if cust["id"] else "",
@@ -333,42 +396,47 @@ with prop_tab:
         items=items,
         subtotal=subtotal, deposit=0, grand_total=subtotal, check_number=None,
         show_paid=False, notes=notes, is_proposal=True,
-        signature_png_bytes=proposal_sig_bytes, signature_date_text=None
+        signature_png_bytes=proposal_sig_bytes, signature_date_text=sig_date
     )
 
-    # Actions
-    cA, cB, cC = st.columns(3)
+    cA, cB, cC, cD = st.columns(4)
     with cA:
         st.download_button("📄 Download Proposal", pdf_data, file_name=f"Proposal_{format_prop_id(next_n)}.pdf", key="p_dl_btn")
     with cB:
-        if st.button("👀 View Proposal PDF", key="p_view_btn"):
-            show_pdf_newtab(pdf_data)
-    with cC:
         if st.button("📧 Email Proposal", key="p_email_btn") and cust["id"]:
             try:
                 send_email(pdf_data, cust.get("email"), f"Proposal {format_prop_id(next_n)}",
                            build_email_body(cust["name"], True, format_prop_id(next_n)),
                            f"Proposal_{format_prop_id(next_n)}.pdf")
                 st.success("Proposal emailed.")
+                reset_proposal_form()
             except Exception as e:
                 st.error(f"Email failed: {e}")
+    with cC:
+        if st.button("💾 Save Proposal", key="p_save_btn") and cust["id"]:
+            with engine.begin() as conn:
+                n = _max_existing_number(conn) + 1
+                pid = format_prop_id(n)
+                conn.execute(text("""
+                    INSERT INTO proposals (id, number, customer_id, project_name, project_location, items_json, notes, status)
+                    VALUES (:id, :num, :cid, :pname, :ploc, :items, :notes, 'open')
+                """), dict(id=pid, num=n, cid=cust["id"], pname=project_name, ploc=project_location,
+                           items=json.dumps(items), notes=notes))
+            st.success(f"Proposal {pid} saved!")
+            reset_proposal_form()
+    with cD:
+        if st.button("♻ Reset Form", key="p_reset_btn"):
+            reset_proposal_form()
+            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
 
-    if st.button("💾 Save Proposal", key="p_save_btn") and cust["id"]:
-        with engine.begin() as conn:
-            n = _max_existing_number(conn) + 1
-            pid = format_prop_id(n)
-            conn.execute(text("""
-                INSERT INTO proposals (id, number, customer_id, project_name, project_location, items_json, notes, status)
-                VALUES (:id, :num, :cid, :pname, :ploc, :items, :notes, 'open')
-            """), dict(id=pid, num=n, cid=cust["id"], pname=project_name, ploc=project_location,
-                       items=json.dumps(items), notes=notes))
-        st.success(f"Proposal {pid} saved!")
-
-    # Active Proposals dashboard
+    # Active Proposals Dashboard
     st.markdown("---")
     st.subheader("📋 Active Proposals")
     with engine.begin() as conn:
-        props = conn.execute(text("SELECT * FROM proposals WHERE status='open' ORDER BY created_at DESC")).mappings().all()
+        props = conn.execute(text("""
+            SELECT * FROM proposals WHERE status='open' ORDER BY created_at DESC
+        """)).mappings().all()
+
     if not props:
         st.info("No open proposals.")
     else:
@@ -376,29 +444,30 @@ with prop_tab:
             with st.expander(f"{prop['id']} — {prop.get('project_name') or ''}"):
                 st.write(f"Customer ID: {prop['customer_id']}")
                 st.write(f"Location: {prop.get('project_location') or ''}")
-                c1, c2, c3 = st.columns(3)
+                c1, c2 = st.columns(2)
 
-                if c1.button("Convert to Invoice", key=f"conv_{prop['id']}"):
-                    with engine.begin() as conn:
-                        inv_no = format_inv_id(prop["number"])
-                        conn.execute(text("""
-                            INSERT INTO invoices (invoice_no, number, customer_id, project_name, project_location, items_json, total, deposit, check_number, paid)
-                            VALUES (:inv,:n,:cid,:pname,:ploc,:items,0,0,NULL,FALSE)
-                            ON CONFLICT (invoice_no) DO NOTHING
-                        """), dict(inv=inv_no, n=prop["number"], cid=prop["customer_id"],
-                                   pname=prop.get("project_name"), ploc=prop.get("project_location"),
-                                   items=prop["items_json"]))
-                        conn.execute(text("UPDATE proposals SET status='converted' WHERE id=:id"), {"id": prop["id"]})
-                    st.success(f"Converted {prop['id']} → {inv_no}. Switch to the Invoice tab.")
-                    st.rerun()
-
-                if c2.button("Close Proposal", key=f"close_{prop['id']}"):
+                if c1.button("Close Proposal", key=f"close_{prop['id']}"):
                     with engine.begin() as conn:
                         conn.execute(text("UPDATE proposals SET status='closed' WHERE id=:id"), {"id": prop["id"]})
                     st.warning(f"Proposal {prop['id']} closed.")
                     st.rerun()
 
-# ===== INVOICE TAB =====
+                if c2.button("View PDF", key=f"view_{prop['id']}"):
+                    prop_items = json.loads(prop["items_json"] or "[]")
+                    cust_name = next((c["name"] for c in customers if c["id"] == prop["customer_id"]), prop["customer_id"])
+                    prop_subtotal = compute_subtotal(prop_items)
+                    prop_pdf = build_pdf(
+                        ref_no=prop["id"], cust_name=cust_name,
+                        project_name=prop.get("project_name"), project_location=prop.get("project_location"),
+                        items=prop_items, subtotal=prop_subtotal, deposit=0, grand_total=prop_subtotal,
+                        check_number=None, is_proposal=True, notes=prop.get("notes")
+                    )
+                    b64 = base64.b64encode(prop_pdf).decode("utf-8")
+                    st.markdown(f'<a href="data:application/pdf;base64,{b64}" target="_blank">📄 Open PDF</a>', unsafe_allow_html=True)
+
+# =========================
+# SECTION: Invoice Tab
+# =========================
 with inv_tab:
     st.subheader("Create / Manage Invoice")
 
@@ -406,62 +475,50 @@ with inv_tab:
     with engine.begin() as conn:
         customers = conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
-    cust = st.selectbox("Customer", cust_options, index=0, key="invoice_customer_select",
+    cust = st.selectbox("Customer", cust_options, index=0, key="i_customer",
                         format_func=lambda c: c["name"])
     if not cust["id"]:
-        st.warning("Please select a customer before saving.")
+        st.warning("Select a customer before saving or emailing.")
 
-    # Handle invoice numbering
+    # Invoice #
     with engine.begin() as conn:
         max_all = _max_existing_number(conn)
+    inv_no = st.text_input("Invoice #", format_inv_id(max_all + 1), key="i_inv_no")
 
-    # Use proposal number if prefilled, otherwise auto-increment
-    if ss.get("prefill_proposal_number"):
-        inv_no = format_inv_id(ss.prefill_proposal_number)
-    else:
-        inv_no = format_inv_id(max_all + 1)
-
-    inv_no = st.text_input("Invoice #", inv_no, key="i_inv_no")
-
-    # Project info
-    project_name = st.text_input("Project Name", ss.get("project_name_value", ""), key="i_project_name")
-    project_location = st.text_input("Project Location (Address)", ss.get("project_location_value", ""), key="i_project_location")
+    # Project fields
+    project_name     = st.text_input("Project Name", key="i_project_name")
+    project_location = st.text_input("Project Location (Address)", key="i_project_location")
 
     # Line items
     st.markdown("**Line Items**")
     items = []
-    prefill = ss.prefill_items or []
     for i in range(ss.line_count):
-        d = prefill[i]["Description"] if i < len(prefill) else ""
-        q = float(prefill[i]["Qty"]) if i < len(prefill) else 1.0
-        u = float(prefill[i]["Unit Price"]) if i < len(prefill) else 0.0
         c1, c2, c3, c4 = st.columns([5,1.5,2,2])
-        desc = c1.text_input(f"Description {i+1}", d, key=f"i_desc_{i}")
-        qty  = c2.number_input(f"Qty {i+1}", min_value=0.0, value=q, step=1.0, key=f"i_qty_{i}")
-        unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, value=u, step=10.0, key=f"i_unit_{i}")
+        desc = c1.text_input(f"Description {i+1}", key=f"i_desc_{i}")
+        qty  = c2.number_input(f"Qty {i+1}",  min_value=0.0, step=1.0, key=f"i_qty_{i}")
+        unit = c3.number_input(f"Unit Price {i+1}", min_value=0.0, step=10.0, key=f"i_unit_{i}")
         c4.write(f"${qty*unit:,.2f}")
         if str(desc).strip():
             items.append({"Description": desc, "Qty": qty, "Unit Price": unit})
     st.button("➕ Add Line Item", on_click=add_line, key="i_add_btn")
 
-    # Totals
     subtotal = compute_subtotal(items)
     deposit = st.number_input("Deposit Amount", min_value=0.0, value=0.0, step=50.0, key="i_deposit")
-    chk_no = st.text_input("Check Number (if paying by check)", "", key="i_checknum")
+    chk_no  = st.text_input("Check Number (if paying by check)", "", key="i_checknum")
     show_paid = st.toggle("Show PAID Stamp", value=False, key="i_paid_toggle")
     grand_total = max(0.0, subtotal - deposit)
     invoice_notes = "Thank you for your business!"
 
     # Signature
     st.subheader("Signature (optional)")
-    invoice_sig_bytes = None
+    invoice_sig_bytes, inv_sig_date = None, None
     if st.toggle("Add Signature to Invoice", key="i_sig_toggle"):
         canvas_result = st_canvas(
             fill_color="rgba(255,255,255,0)",
             stroke_width=2,
             stroke_color="black",
             background_color="white",
-            width=400, height=120,
+            width=420, height=140,
             drawing_mode="freedraw",
             key="i_sig_canvas",
             display_toolbar=True
@@ -472,129 +529,118 @@ with inv_tab:
             buf = io.BytesIO()
             sig_img.save(buf, format="PNG")
             invoice_sig_bytes = buf.getvalue()
+            inv_sig_date = datetime.now().strftime("%m/%d/%Y")
 
-    # Build PDF
+    # Build invoice PDF
     pdf_data = build_pdf(
         ref_no=inv_no, cust_name=cust["name"] if cust["id"] else "",
         project_name=project_name, project_location=project_location,
-        items=items, subtotal=subtotal, deposit=deposit, grand_total=grand_total,
-        check_number=chk_no, show_paid=show_paid, notes=invoice_notes,
-        is_proposal=False, signature_png_bytes=invoice_sig_bytes,
-        signature_date_text=datetime.now().strftime("%m/%d/%Y") if invoice_sig_bytes else None
+        items=items, subtotal=subtotal, deposit=deposit, grand_total=grand_total, check_number=chk_no,
+        show_paid=show_paid, notes=invoice_notes, is_proposal=False,
+        signature_png_bytes=invoice_sig_bytes, signature_date_text=inv_sig_date
     )
 
-    # Actions
-    cA, cB, cC = st.columns(3)
+    cA, cB, cC, cD = st.columns(4)
     with cA:
         st.download_button("📄 Download Invoice", pdf_data, file_name=f"Invoice_{inv_no}.pdf", key="i_dl_btn")
     with cB:
-        if st.button("👀 View Invoice PDF", key="i_view_btn"):
-            show_pdf_newtab(pdf_data)
-    with cC:
         if st.button("📧 Email Invoice", key="i_email_btn") and cust["id"]:
             try:
                 send_email(pdf_data, cust.get("email"), f"Invoice {inv_no}",
                            build_email_body(cust["name"], False, inv_no),
                            f"Invoice_{inv_no}.pdf")
                 st.success("Invoice emailed.")
+                reset_invoice_form()
             except Exception as e:
                 st.error(f"Email failed: {e}")
-
-    # Save invoice
-    if st.button("💾 Save Invoice", key="i_save_btn") and cust["id"]:
-        try:
-            number_part = int(inv_no.split("-")[-1])
-        except Exception:
-            st.error("Invoice # must look like INV-1001")
-            st.stop()
-        with engine.begin() as conn:
-            existing = conn.execute(text("SELECT invoice_no FROM invoices WHERE number=:n"), {"n": number_part}).fetchone()
-            if existing:
-                conn.execute(text("""
-                    UPDATE invoices
-                    SET customer_id=:cid, project_name=:pname, project_location=:ploc,
-                        items_json=:items, total=:total, deposit=:dep, check_number=:chk, paid=:paid
-                    WHERE number=:n
-                """), dict(cid=cust["id"], pname=project_name, ploc=project_location,
-                           items=json.dumps(items), total=grand_total, dep=deposit,
-                           chk=chk_no, paid=show_paid, n=number_part))
+    with cC:
+        if st.button("💾 Save Invoice", key="i_save_btn") and cust["id"]:
+            try:
+                number_part = int(inv_no.split("-")[-1])
+            except Exception:
+                st.error("Invoice # must look like INV-1001")
             else:
-                conn.execute(text("""
-                    INSERT INTO invoices (invoice_no, number, customer_id, project_name, project_location,
-                                          items_json, total, deposit, check_number, paid)
-                    VALUES (:inv,:n,:cid,:pname,:ploc,:items,:total,:dep,:chk,:paid)
-                """), dict(inv=inv_no, n=number_part, cid=cust["id"], pname=project_name,
-                           ploc=project_location, items=json.dumps(items),
-                           total=grand_total, dep=deposit, chk=chk_no, paid=show_paid))
-        st.success(f"Invoice {inv_no} saved!")
+                with engine.begin() as conn:
+                    existing = conn.execute(text("SELECT invoice_no FROM invoices WHERE number=:n"), {"n": number_part}).fetchone()
+                    if existing:
+                        conn.execute(text("""
+                            UPDATE invoices
+                            SET customer_id=:cid, project_name=:pname, project_location=:ploc,
+                                items_json=:items, total=:total, deposit=:dep, check_number=:chk, paid=:paid
+                            WHERE number=:n
+                        """), dict(cid=cust["id"], pname=project_name, ploc=project_location,
+                                   items=json.dumps(items), total=grand_total, dep=deposit,
+                                   chk=chk_no, paid=show_paid, n=number_part))
+                    else:
+                        conn.execute(text("""
+                            INSERT INTO invoices (invoice_no, number, customer_id, project_name, project_location,
+                                                  items_json, total, deposit, check_number, paid)
+                            VALUES (:inv,:n,:cid,:pname,:ploc,:items,:total,:dep,:chk,:paid)
+                        """), dict(inv=inv_no, n=number_part, cid=cust["id"], pname=project_name,
+                                   ploc=project_location, items=json.dumps(items),
+                                   total=grand_total, dep=deposit, chk=chk_no, paid=show_paid))
+                st.success(f"Invoice {inv_no} saved!")
+                reset_invoice_form()
+    with cD:
+        if st.button("♻ Reset Form", key="i_reset_btn"):
+            reset_invoice_form()
+            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
 
-    # Recent invoices
+    # Recent Invoices Dashboard
     st.markdown("---")
     st.subheader("🧾 Recent Invoices")
     with engine.begin() as conn:
         invs = conn.execute(text("""
-            SELECT * FROM invoices ORDER BY created_at DESC LIMIT 20
+            SELECT invoice_no, customer_id, project_name, project_location, items_json, total, deposit, check_number, paid, created_at
+            FROM invoices ORDER BY created_at DESC LIMIT 20
         """)).mappings().all()
     if not invs:
         st.info("No invoices yet.")
     else:
         for inv in invs:
-            with st.expander(f"{inv['invoice_no']} — {inv.get('project_name') or ''} — ${float(inv['total'] or 0):,.2f}"):
+            tot = float(inv["total"] or 0)
+            with st.expander(f"{inv['invoice_no']} — {inv.get('project_name') or ''} — ${tot:,.2f}"):
                 st.write(f"Customer ID: {inv['customer_id']}")
-                st.write(f"Total: ${float(inv['total'] or 0):,.2f}")
-                st.write("Paid: ✅" if inv["paid"] else "Paid: ❌")
-
+                st.write(f"Paid: {'✅' if inv['paid'] else '❌'}")
                 c1, c2, c3 = st.columns(3)
+
                 if c1.button("Mark Paid / Unpaid", key=f"toggle_{inv['invoice_no']}"):
                     with engine.begin() as conn:
                         conn.execute(text("UPDATE invoices SET paid = NOT paid WHERE invoice_no=:id"),
                                      {"id": inv["invoice_no"]})
                     st.rerun()
+
                 if c2.button("View PDF", key=f"view_{inv['invoice_no']}"):
                     items_pdf = json.loads(inv["items_json"] or "[]")
                     subtotal_pdf = compute_subtotal(items_pdf)
                     pdf = build_pdf(
-                        ref_no=inv["invoice_no"], cust_name=next((c["name"] for c in customers if c["id"] == inv["customer_id"]), inv["customer_id"]),
-                        project_name=inv.get("project_name"), project_location=inv.get("project_location"),
+                        ref_no=inv["invoice_no"],
+                        cust_name=inv["customer_id"],  # you can join to customers if you want names here
+                        project_name=inv.get("project_name"),
+                        project_location=inv.get("project_location"),
                         items=items_pdf, subtotal=subtotal_pdf, deposit=inv.get("deposit") or 0,
                         grand_total=inv.get("total") or subtotal_pdf, check_number=inv.get("check_number"),
                         show_paid=bool(inv.get("paid")), notes="Thank you for your business!", is_proposal=False
                     )
-                    show_pdf_newtab(pdf)
-                if c3.download_button("📄 Download", data=build_pdf(
-                        ref_no=inv["invoice_no"], cust_name=next((c["name"] for c in customers if c["id"] == inv["customer_id"]), inv["customer_id"]),
-                        project_name=inv.get("project_name"), project_location=inv.get("project_location"),
+                    b64 = base64.b64encode(pdf).decode("utf-8")
+                    st.markdown(f'<a href="data:application/pdf;base64,{b64}" target="_blank">📄 Open PDF</a>', unsafe_allow_html=True)
+
+                c3.download_button(
+                    "⬇️ Download PDF",
+                    data=build_pdf(
+                        ref_no=inv["invoice_no"],
+                        cust_name=inv["customer_id"],
+                        project_name=inv.get("project_name"),
+                        project_location=inv.get("project_location"),
                         items=json.loads(inv["items_json"] or "[]"),
                         subtotal=compute_subtotal(json.loads(inv["items_json"] or "[]")),
                         deposit=inv.get("deposit") or 0,
                         grand_total=inv.get("total") or 0,
                         check_number=inv.get("check_number"),
-                        show_paid=bool(inv.get("paid")), notes="Thank you for your business!", is_proposal=False
-                    ), file_name=f"{inv['invoice_no']}.pdf", key=f"dl_{inv['invoice_no']}"):
-                    pass
-
-    # Converted proposals (now only loads, doesn’t auto-fill invoice form)
-    st.markdown("---")
-    st.subheader("📋 Converted Proposals")
-    with engine.begin() as conn:
-        converted_props = conn.execute(text("""
-            SELECT p.id, p.number, p.project_name, p.project_location, p.items_json, p.customer_id, c.name as customer_name
-            FROM proposals p
-            JOIN customers c ON p.customer_id = c.id
-            WHERE p.status='converted'
-            ORDER BY p.created_at DESC
-        """)).mappings().all()
-
-    if not converted_props:
-        st.info("No converted proposals available.")
-    else:
-        for prop in converted_props:
-            with st.expander(f"{prop['id']} — {prop['project_name'] or ''}"):
-                st.write(f"Customer: {prop['customer_name']}")
-                st.write(f"Location: {prop['project_location'] or ''}")
-                if st.button(f"Load Proposal into Invoice Form", key=f"load_{prop['id']}"):
-                    ss.prefill_items = json.loads(prop["items_json"] or "[]")
-                    ss.project_name_value = prop.get("project_name") or ""
-                    ss.project_location_value = prop.get("project_location") or ""
-                    ss.prefill_proposal_number = prop["number"]
-                    st.rerun()
+                        show_paid=bool(inv.get("paid")),
+                        notes="Thank you for your business!",
+                        is_proposal=False
+                    ),
+                    file_name=f"{inv['invoice_no']}.pdf",
+                    key=f"dl_{inv['invoice_no']}"
+                )
