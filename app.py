@@ -326,14 +326,50 @@ prop_tab, inv_tab = st.tabs(["Proposal", "Invoice"])
 with prop_tab:
     st.subheader("Create Proposal")
 
-    # Customers
+    # === CUSTOMER SELECTION ===
+st.subheader("Customer")
+
+mode = st.radio(
+    "Choose Option",
+    ["Select Existing Customer", "➕ Add New Customer"],
+    key=f"{st.session_state.get('current_tab', 'unknown')}_cust_mode"
+)
+
+if mode == "Select Existing Customer":
     with engine.begin() as conn:
         customers = conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
-    cust = st.selectbox("Customer", cust_options, index=0, key="p_customer",
-                        format_func=lambda c: c["name"])
+    cust = st.selectbox("Customer", cust_options, index=0,
+                        format_func=lambda c: c["name"],
+                        key=f"{st.session_state.get('current_tab', 'unknown')}_cust_select")
     if not cust["id"]:
-        st.warning("Select a customer before saving or emailing.")
+        st.warning("Please select a customer before saving.")
+
+else:  # ➕ Add New Customer
+    name  = st.text_input("Full Name *", key="new_cust_name")
+    email = st.text_input("Email", key="new_cust_email")
+    phone = st.text_input("Phone", key="new_cust_phone")
+    addr  = st.text_input("Street Address", key="new_cust_addr")
+    csz   = st.text_input("City, State, Zip", key="new_cust_csz")
+
+    if st.button("💾 Save New Customer", key="new_cust_btn"):
+        if not name.strip():
+            st.error("Full Name required")
+        else:
+            cid = (email or phone or str(uuid.uuid4()))[:24]
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO customers(id,name,email,phone,address,city_state_zip)
+                    VALUES(:id,:name,:email,:phone,:addr,:csz)
+                    ON CONFLICT(id) DO UPDATE
+                    SET name=EXCLUDED.name, email=EXCLUDED.email,
+                        phone=EXCLUDED.phone, address=EXCLUDED.address,
+                        city_state_zip=EXCLUDED.city_state_zip
+                """), dict(id=cid, name=name.strip(), email=email.strip(),
+                           phone=phone.strip(), addr=addr.strip(), csz=csz.strip()))
+            st.success(f"Customer {name} added!")
+            st.rerun()
+    cust = {"id": None, "name": name}
 
     # Project fields
     project_name     = st.text_input("Project Name", key="p_project_name")
@@ -471,15 +507,50 @@ with prop_tab:
 with inv_tab:
     st.subheader("Create / Manage Invoice")
 
-    # Customers
+# === CUSTOMER SELECTION ===
+st.subheader("Customer")
+
+mode = st.radio(
+    "Choose Option",
+    ["Select Existing Customer", "➕ Add New Customer"],
+    key=f"{st.session_state.get('current_tab', 'unknown')}_cust_mode"
+)
+
+if mode == "Select Existing Customer":
     with engine.begin() as conn:
         customers = conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
     cust_options = [{"id": None, "name": "-- Select Customer --"}] + customers
-    cust = st.selectbox("Customer", cust_options, index=0, key="i_customer",
-                        format_func=lambda c: c["name"])
+    cust = st.selectbox("Customer", cust_options, index=0,
+                        format_func=lambda c: c["name"],
+                        key=f"{st.session_state.get('current_tab', 'unknown')}_cust_select")
     if not cust["id"]:
-        st.warning("Select a customer before saving or emailing.")
+        st.warning("Please select a customer before saving.")
 
+else:  # ➕ Add New Customer
+    name  = st.text_input("Full Name *", key="new_cust_name")
+    email = st.text_input("Email", key="new_cust_email")
+    phone = st.text_input("Phone", key="new_cust_phone")
+    addr  = st.text_input("Street Address", key="new_cust_addr")
+    csz   = st.text_input("City, State, Zip", key="new_cust_csz")
+
+    if st.button("💾 Save New Customer", key="new_cust_btn"):
+        if not name.strip():
+            st.error("Full Name required")
+        else:
+            cid = (email or phone or str(uuid.uuid4()))[:24]
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO customers(id,name,email,phone,address,city_state_zip)
+                    VALUES(:id,:name,:email,:phone,:addr,:csz)
+                    ON CONFLICT(id) DO UPDATE
+                    SET name=EXCLUDED.name, email=EXCLUDED.email,
+                        phone=EXCLUDED.phone, address=EXCLUDED.address,
+                        city_state_zip=EXCLUDED.city_state_zip
+                """), dict(id=cid, name=name.strip(), email=email.strip(),
+                           phone=phone.strip(), addr=addr.strip(), csz=csz.strip()))
+            st.success(f"Customer {name} added!")
+            st.rerun()
+    cust = {"id": None, "name": name}
     # Invoice #
     with engine.begin() as conn:
         max_all = _max_existing_number(conn)
