@@ -1,7 +1,7 @@
 # =========================
 # J & I — Proposals & Invoices (Streamlit)
 # =========================
-import os, io, json, base64, textwrap, smtplib, pytz
+import os, io, json, base64, textwrap, smtplib, pytz, re
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 
@@ -88,7 +88,7 @@ init_db()
 
 def migrate_db():
     with engine.begin() as conn:
-        # ensure internal_cost column exists
+        # Ensure internal_cost column exists
         res = conn.execute(text("""
             SELECT column_name FROM information_schema.columns
             WHERE table_name='invoices' AND column_name='internal_cost'
@@ -149,6 +149,13 @@ def _max_existing_number(conn):
 
 def format_prop_id(n): return f"P-{n:04d}"
 def format_inv_id(n):  return f"INV-{n:04d}"
+def format_inv_from_proposal(n): return f"INV-P-{n:04d}"
+
+def parse_numeric_number(inv_no: str) -> int:
+    # Extract the last run of digits (works for INV-#### and INV-P-####)
+    m = re.search(r"(\d+)$", inv_no or "")
+    if not m: raise ValueError("Could not parse numeric invoice number.")
+    return int(m.group(1))
 
 def show_pdf_newtab(pdf_bytes: bytes, label: str="📄 Open PDF in New Tab"):
     b64 = base64.b64encode(pdf_bytes).decode("utf-8")
@@ -260,7 +267,9 @@ def build_pdf(ref_no,cust_name,project_name,project_location,items,
         c.drawImage(sig,1*inch,y,width=150,height=40,mask='auto')
         if signature_date_text: c.setFont("Helvetica",10); c.drawString(4.5*inch,y+15,f"Signed: {signature_date_text}")
     else:
-        c.setFont("Helvetica",10); c.drawString(1*inch,y,"X ____________________"); c.drawString(4*inch,y,"Date: ______________")
+        c.setFont("Helvetica",10)
+        c.drawString(1*inch,y,"X ____________________")
+        c.drawString(4*inch,y,"Date: ______________")
 
     c.save(); buf.seek(0); return buf.getvalue()
 
@@ -405,9 +414,10 @@ with prop_tab:
                 c1,c2,c3=st.columns(3)
                 if c1.button("Convert to Invoice", key=f"conv_{prop['id']}"):
                     with engine.begin() as conn:
+                        # create invoice with same number but labeled as from proposal
                         exists=conn.execute(text("SELECT 1 FROM invoices WHERE number=:n"),{"n":prop["number"]}).fetchone()
                         if not exists:
-                            inv_no=format_inv_id(prop["number"])
+                            inv_no=format_inv_from_proposal(prop["number"])  # INV-P-#### ✅
                             conn.execute(text("""
                                 INSERT INTO invoices (invoice_no,number,customer_id,project_name,project_location,
                                                       items_json,total,deposit,check_number,paid)
@@ -416,7 +426,8 @@ with prop_tab:
                                       pname=prop.get("project_name"),ploc=prop.get("project_location"),
                                       items=prop["items_json"]))
                         conn.execute(text("UPDATE proposals SET status='converted' WHERE id=:id"),{"id":prop["id"]})
-                    st.success(f"Converted {prop['id']} → {format_inv_id(prop['number'])}."); st.rerun()
+                    st.success(f"Converted {prop['id']} → {format_inv_from_proposal(prop['number'])}. See it in the Invoice tab (Converted Proposals).")
+                    st.rerun()
                 if c2.button("Close Proposal", key=f"close_{prop['id']}"):
                     with engine.begin() as conn: conn.execute(text("UPDATE proposals SET status='closed' WHERE id=:id"),{"id":prop["id"]})
                     st.warning(f"Proposal {prop['id']} closed."); st.rerun()
@@ -440,7 +451,16 @@ with inv_tab:
     if mode=="Select Existing Customer":
         with engine.begin() as conn: customers=conn.execute(text("SELECT * FROM customers ORDER BY name")).mappings().all()
         cust_options=[{"id":None,"name":"-- Select Customer --"}]+customers
-        cust=st.selectbox("Customer",cust_options,index=0,format_func=lambda c:c["name"],key=f"invoice_cust_select")
+
+        # Auto-select customer if coming from "Load into Invoice Maker"
+        selected_index = 0
+        if ss.prefill_customer_id:
+            for idx, opt in enumerate(cust_options):
+                if opt.get("id")==ss.prefill_customer_id:
+                    selected_index = idx
+                    break
+
+        cust=st.selectbox("Customer",cust_options,index=selected_index,format_func=lambda c:c["name"],key=f"invoice_cust_select")
         if not cust["id"]:
             st.warning("Please select a customer before saving.")
     else:
@@ -466,7 +486,11 @@ with inv_tab:
     # Invoice number defaults
     with engine.begin() as conn: max_all=_max_existing_number(conn)
     default_num=ss.prefill_proposal_number
-    inv_no_default=format_inv_id(default_num) if default_num else format_inv_id(max_all+1)
+    if default_num:
+        inv_no_default = format_inv_from_proposal(default_num)  # INV-P-#### when loaded from proposal
+    else:
+        inv_no_default = format_inv_id(max_all+1)               # INV-#### normal auto-increment
+
     i_nonce=ss.i_nonce
     inv_no=st.text_input("Invoice #",inv_no_default,key=f"i_inv_no_{i_nonce}")
 
@@ -521,7 +545,8 @@ with inv_tab:
     with cC:
         if st.button("📧 Email Invoice") and cust.get("id"):
             try:
-                with engine.begin() as conn: row=conn.execute(text("SELECT email,name FROM customers WHERE id=:id"),{"id":cust["id"]}).mappings().first()
+                with engine.begin() as conn:
+                    row=conn.execute(text("SELECT email,name FROM customers WHERE id=:id"),{"id":cust["id"]}).mappings().first()
                 to_addr=(row["email"] if row and row.get("email") else None) or cust.get("email")
                 name_for_email=(row["name"] if row and row.get("name") else cust.get("name") or "")
                 send_email(pdf_inv,to_addr,f"Invoice {inv_no}",build_email_body(name_for_email,False,inv_no),f"Invoice_{inv_no}.pdf")
@@ -529,8 +554,11 @@ with inv_tab:
             except Exception as e: st.error(f"Email failed: {e}")
     with cD:
         if st.button("💾 Save Invoice") and cust.get("id"):
-            try: number_part=int(inv_no.split("-")[-1])
-            except Exception: st.error("Invoice # must look like INV-1001"); st.stop()
+            try:
+                number_part = parse_numeric_number(inv_no)  # handles INV-#### and INV-P-####
+            except Exception:
+                st.error("Invoice # must look like INV-1001 or INV-P-1001")
+                st.stop()
             with engine.begin() as conn:
                 existing=conn.execute(text("SELECT invoice_no FROM invoices WHERE number=:n"),{"n":number_part}).fetchone()
                 if existing:
@@ -569,7 +597,8 @@ with inv_tab:
                 st.write(f"Paid: {'✅' if inv['paid'] else '❌'}")
                 c1,c2,c3=st.columns(3)
                 if c1.button("Mark Paid / Unpaid",key=f"toggle_{inv['invoice_no']}"):
-                    with engine.begin() as conn: conn.execute(text("UPDATE invoices SET paid = NOT paid WHERE invoice_no=:id"),{"id":inv["invoice_no"]}); st.rerun()
+                    with engine.begin() as conn: conn.execute(text("UPDATE invoices SET paid = NOT paid WHERE invoice_no=:id"),{"id":inv["invoice_no"]})
+                    st.rerun()
                 if c2.button("View PDF",key=f"view_{inv['invoice_no']}"):
                     items_pdf=json.loads(inv["items_json"] or "[]"); subtotal_pdf=compute_subtotal(items_pdf)
                     pdf=build_pdf(ref_no=inv["invoice_no"],cust_name=cust_map.get(inv["customer_id"],inv["customer_id"]),
@@ -606,10 +635,16 @@ with inv_tab:
                 st.write(f"Location: {prop.get('project_location') or ''}"); st.write(f"Status: {prop['status']}")
                 c1,c2=st.columns(2)
                 if c1.button("Load into Invoice Maker",key=f"load_{prop['id']}"):
-                    ss.prefill_customer_id=prop["customer_id"]; ss.prefill_items=json.loads(prop["items_json"] or "[]")
-                    ss.project_name_value=prop.get("project_name") or ""; ss.project_location_value=prop.get("project_location") or ""
-                    ss.prefill_proposal_number=prop["number"]; ss.prefill_proposal_id=prop["id"]; ss.i_nonce+=1
-                    st.success(f"Proposal {prop['id']} loaded above."); st.rerun()
+                    # Prefill EVERYTHING, including the customer id
+                    ss.prefill_customer_id=prop["customer_id"]
+                    ss.prefill_items=json.loads(prop["items_json"] or "[]")
+                    ss.project_name_value=prop.get("project_name") or ""
+                    ss.project_location_value=prop.get("project_location") or ""
+                    ss.prefill_proposal_number=prop["number"]   # makes default inv no = INV-P-####
+                    ss.prefill_proposal_id=prop["id"]
+                    ss.i_nonce+=1
+                    st.success(f"Proposal {prop['id']} loaded above with customer selected.")
+                    st.rerun()
                 if c2.button("View Proposal PDF",key=f"view_conv_{prop['id']}"):
                     prop_items=json.loads(prop["items_json"] or "[]"); prop_subtotal=compute_subtotal(prop_items)
                     prop_pdf=build_pdf(ref_no=prop["id"],cust_name=cust_map2.get(prop["customer_id"],prop["customer_id"]),
