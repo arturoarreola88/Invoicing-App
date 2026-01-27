@@ -337,8 +337,8 @@ with prop_tab:
 
     subtotal = compute_subtotal(items)
     default_notes = (
-        "By signing, the signee agrees to make a deposit of 50 % of the proposed total and the remainging balance upon project completion, "
-        "acknowledges that additional work outside the scope will incur extra charges on the final invoice, "
+        "By signing, the signee agrees to remit a 50% deposit of the proposed total, with the remainging balance due upon project completion, "
+        "acknowledging that additional work outside the defined scope will incur extra charges reflected on final invoice, "
         "and understands that all manufacturer details are outlined in the product owner’s manual."
     )
     notes = st.text_area("Notes", default_notes, height=100, key=f"p_notes_{p_nonce}")
