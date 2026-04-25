@@ -1,4 +1,4 @@
-=========================
+#=========================
 # J & I — Proposals & Invoices (Streamlit)
 # =========================
 import os, io, json, base64, textwrap, smtplib, pytz, re
